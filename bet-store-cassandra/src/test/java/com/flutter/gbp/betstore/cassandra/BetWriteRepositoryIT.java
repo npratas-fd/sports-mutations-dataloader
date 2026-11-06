@@ -75,6 +75,18 @@ class BetWriteRepositoryIT {
     }
 
     @Test
+    void newerUpsertAfterOlderDeleteSurvives() {
+        Bet a = bet("A");
+        repository.delete(ACCOUNT_ID, BET_ID, OptionalLong.of(1000L));
+
+        repository.upsert(new BetRecord(ACCOUNT_ID, BET_ID, Instant.ofEpochMilli(2), a, 2000L));
+
+        assertThat(storedBet("SELECT bet FROM bet_store.bets WHERE account_id = ? AND bet_id = ?", ACCOUNT_ID, BET_ID))
+                .contains(a);
+        assertThat(storedBet("SELECT bet FROM bet_store.bets_by_id WHERE bet_id = ?", BET_ID)).contains(a);
+    }
+
+    @Test
     void deleteWithoutTimestampRemoves() {
         repository.upsert(new BetRecord(ACCOUNT_ID, BET_ID, Instant.ofEpochMilli(1), bet("A"), 1000L));
 
