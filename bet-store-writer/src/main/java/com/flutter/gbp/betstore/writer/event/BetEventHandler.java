@@ -35,7 +35,8 @@ public class BetEventHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(BetEventHandler.class);
 
-    static final String EVENTS_METRIC = "betstore.writer.events";
+    /** Counter of handled events, tagged with {@code source} and {@code outcome}. */
+    public static final String EVENTS_METRIC = "betstore.writer.events";
     static final String LATENCY_METRIC = "betstore.writer.source.creation.latency";
 
     /**

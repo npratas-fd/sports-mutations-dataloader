@@ -20,6 +20,7 @@ import com.ppb.platform.sb.fbp.proto.bet.part.PartOuterClass;
 import com.ppb.platform.sb.fbp.proto.event.BetDomainEventOuterClass;
 import com.ppb.platform.sb.retail.proto.event.BetDomainEventOuterClass.BetContext;
 import com.ppb.platform.sb.retail.proto.event.BetDomainEventOuterClass.BetDomainEvent;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -49,6 +50,7 @@ import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -88,6 +90,9 @@ class BetStoreWriterIT {
 
     @MockitoSpyBean
     private BetWriteRepository repository;
+
+    @Autowired
+    private MeterRegistry meterRegistry;
 
     @Value("${spring.kafka.consumer.group-id}")
     private String groupId;
@@ -228,6 +233,9 @@ class BetStoreWriterIT {
             // proves the write failed and was retried at least twice ...
             verify(repository, timeout(STORE_TIMEOUT.toMillis()).atLeast(3))
                     .upsert(argThat(record -> betId.equals(record.betId())));
+            // ... each failed attempt is counted ...
+            assertThat(meterRegistry.counter("betstore.writer.cassandra.retries", "topic", FBP_TOPIC).count())
+                    .isGreaterThanOrEqualTo(2.0);
             // ... and the offset of the record was not committed
             OptionalLong committed = committedOffset(groupId, FBP_TOPIC);
             assertThat(committed.isEmpty() || committed.getAsLong() <= offset)

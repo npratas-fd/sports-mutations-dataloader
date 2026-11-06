@@ -38,7 +38,8 @@ import org.springframework.util.backoff.FixedBackOff;
  *     <li>a Cassandra failure ({@link DriverException} anywhere in the cause chain) is retried forever with
  *     exponential backoff ({@value #CASSANDRA_INITIAL_INTERVAL_MS} ms up to {@value #CASSANDRA_MAX_INTERVAL_MS} ms).
  *     The record is re-sought and its offset is not committed, so nothing is lost and the partition keeps its order;
- *     the container is never stopped;</li>
+ *     the container is never stopped. Each failed attempt is logged and counted
+ *     ({@value #CASSANDRA_RETRIES_METRIC}, tag {@code topic});</li>
  *     <li>any other failure, including a record that cannot be deserialized ({@link ErrorHandlingDeserializer}), is
  *     logged, counted and skipped: the offset is committed and the partition moves on.</li>
  * </ul>
@@ -56,6 +57,7 @@ public class KafkaConfiguration {
     static final double CASSANDRA_BACKOFF_MULTIPLIER = 2.0;
 
     static final String SKIPPED_RECORDS_METRIC = "betstore.writer.records.skipped";
+    static final String CASSANDRA_RETRIES_METRIC = "betstore.writer.cassandra.retries";
 
     private static final Logger LOGGER = LoggerFactory.getLogger(KafkaConfiguration.class);
 
@@ -75,8 +77,8 @@ public class KafkaConfiguration {
 
     @Bean
     BetEventListeners betEventListeners(FbpEventAdapter fbpEventAdapter, AbpEventAdapter abpEventAdapter,
-                                        BetEventHandler betEventHandler) {
-        return new BetEventListeners(fbpEventAdapter, abpEventAdapter, betEventHandler);
+                                        BetEventHandler betEventHandler, MeterRegistry meterRegistry) {
+        return new BetEventListeners(fbpEventAdapter, abpEventAdapter, betEventHandler, meterRegistry);
     }
 
     /**
@@ -89,6 +91,7 @@ public class KafkaConfiguration {
         errorHandler.setBackOffFunction((record, exception) -> isCassandraFailure(exception) ? cassandraBackOff() : null);
         errorHandler.setRetryListeners((record, exception, deliveryAttempt) -> {
             if (isCassandraFailure(exception)) {
+                Counter.builder(CASSANDRA_RETRIES_METRIC).tag("topic", record.topic()).register(meterRegistry).increment();
                 LOGGER.warn("Cassandra write failed, retrying without committing the offset, topic: {}, partition: {}, "
                                 + "offset: {}, key: {}, attempt: {}, error: {}", record.topic(), record.partition(),
                         record.offset(), record.key(), deliveryAttempt, rootCause(exception).toString());
