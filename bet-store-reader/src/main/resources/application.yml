@@ -1,0 +1,16 @@
+spring:
+  application:
+    name: bet-store-reader
+  cassandra:
+    # The keyspace and tables are provisioned by infra (cql/bet_store.cql in tests)
+    keyspace-name: bet_store
+  threads:
+    virtual:
+      enabled: true
+
+bet-store:
+  reader:
+    # Maximum number of bets returned by an account query
+    bet-limit: 70
+    # Maximum number of distinct ids accepted in ?betIds=
+    max-bet-ids: 70
