@@ -12,13 +12,17 @@ import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.kafka.autoconfigure.ConcurrentKafkaListenerContainerFactoryConfigurer;
+import org.springframework.boot.kafka.autoconfigure.DefaultKafkaConsumerFactoryCustomizer;
 import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.core.KafkaAdmin;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
 import org.springframework.util.backoff.BackOff;
@@ -43,6 +47,9 @@ import org.springframework.util.backoff.FixedBackOff;
  *     <li>any other failure, including a record that cannot be deserialized ({@link ErrorHandlingDeserializer}), is
  *     logged, counted and skipped: the offset is committed and the partition moves on.</li>
  * </ul>
+ *
+ * <p>The consumer factories are built here rather than by Boot, so Boot's {@link DefaultKafkaConsumerFactoryCustomizer}
+ * beans are applied explicitly: that is what publishes the Kafka client metrics, including the lag per partition.
  */
 @Configuration(proxyBeanMethods = false)
 public class KafkaConfiguration {
@@ -64,21 +71,31 @@ public class KafkaConfiguration {
     @Bean(FBP_CONTAINER_FACTORY)
     ConcurrentKafkaListenerContainerFactory<String, com.ppb.platform.sb.fbp.proto.event.BetDomainEventOuterClass.BetDomainEvent>
             fbpKafkaListenerContainerFactory(ConcurrentKafkaListenerContainerFactoryConfigurer configurer,
-                                             KafkaProperties kafkaProperties) {
-        return containerFactory(configurer, kafkaProperties, FbpDeserializer::new);
+                                             KafkaProperties kafkaProperties,
+                                             ObjectProvider<DefaultKafkaConsumerFactoryCustomizer> customizers) {
+        return containerFactory(configurer, kafkaProperties, customizers, FbpDeserializer::new);
     }
 
     @Bean(ABP_CONTAINER_FACTORY)
     ConcurrentKafkaListenerContainerFactory<String, com.ppb.platform.sb.retail.proto.event.BetDomainEventOuterClass.BetDomainEvent>
             abpKafkaListenerContainerFactory(ConcurrentKafkaListenerContainerFactoryConfigurer configurer,
-                                             KafkaProperties kafkaProperties) {
-        return containerFactory(configurer, kafkaProperties, AbpDeserializer::new);
+                                             KafkaProperties kafkaProperties,
+                                             ObjectProvider<DefaultKafkaConsumerFactoryCustomizer> customizers) {
+        return containerFactory(configurer, kafkaProperties, customizers, AbpDeserializer::new);
     }
 
     @Bean
     BetEventListeners betEventListeners(FbpEventAdapter fbpEventAdapter, AbpEventAdapter abpEventAdapter,
                                         BetEventHandler betEventHandler, MeterRegistry meterRegistry) {
         return new BetEventListeners(fbpEventAdapter, abpEventAdapter, betEventHandler, meterRegistry);
+    }
+
+    /**
+     * @return the {@code kafka} component of {@code /actuator/health}
+     */
+    @Bean(destroyMethod = "close")
+    KafkaHealthIndicator kafkaHealthIndicator(KafkaListenerEndpointRegistry registry, KafkaAdmin kafkaAdmin) {
+        return new KafkaHealthIndicator(registry, kafkaAdmin);
     }
 
     /**
@@ -127,11 +144,15 @@ public class KafkaConfiguration {
     @SuppressWarnings({"rawtypes", "unchecked"})
     private static <V> ConcurrentKafkaListenerContainerFactory<String, V> containerFactory(
             ConcurrentKafkaListenerContainerFactoryConfigurer configurer, KafkaProperties kafkaProperties,
+            ObjectProvider<DefaultKafkaConsumerFactoryCustomizer> customizers,
             Supplier<Deserializer<V>> valueDeserializer) {
-        ConsumerFactory<String, V> consumerFactory = new DefaultKafkaConsumerFactory<>(
+        DefaultKafkaConsumerFactory<String, V> consumerFactory = new DefaultKafkaConsumerFactory<>(
                 kafkaProperties.buildConsumerProperties(),
                 StringDeserializer::new,
                 () -> new ErrorHandlingDeserializer<>(valueDeserializer.get()));
+        // Boot applies these only to its own consumer factory, not to the ones built here. Among them is the
+        // Micrometer listener that publishes the Kafka client metrics (kafka.consumer.fetch.manager.records.lag, ...)
+        customizers.orderedStream().forEach(customizer -> customizer.customize(consumerFactory));
         ConcurrentKafkaListenerContainerFactory<String, V> factory = new ConcurrentKafkaListenerContainerFactory<>();
         configurer.configure((ConcurrentKafkaListenerContainerFactory) factory, (ConsumerFactory) consumerFactory);
         return factory;

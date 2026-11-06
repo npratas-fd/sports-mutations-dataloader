@@ -8,6 +8,21 @@ spring:
     virtual:
       enabled: true
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      # Lists the components (cassandra) without their details
+      show-components: always
+  metrics:
+    distribution:
+      percentiles:
+        # p50/p95/p99 per endpoint (tag "uri") of http.server.requests
+        "[http.server.requests]": 0.5,0.95,0.99
+
 bet-store:
   reader:
     # Maximum number of bets returned by an account query

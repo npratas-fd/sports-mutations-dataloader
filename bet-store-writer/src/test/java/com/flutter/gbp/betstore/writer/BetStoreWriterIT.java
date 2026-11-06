@@ -21,6 +21,7 @@ import com.ppb.platform.sb.fbp.proto.event.BetDomainEventOuterClass;
 import com.ppb.platform.sb.retail.proto.event.BetDomainEventOuterClass.BetContext;
 import com.ppb.platform.sb.retail.proto.event.BetDomainEventOuterClass.BetDomainEvent;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -53,6 +54,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.builder.SpringApplicationBuilder;
+import org.springframework.boot.health.actuate.endpoint.CompositeHealthDescriptor;
+import org.springframework.boot.health.actuate.endpoint.HealthEndpoint;
+import org.springframework.boot.health.contributor.Status;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
@@ -93,6 +97,9 @@ class BetStoreWriterIT {
 
     @Autowired
     private MeterRegistry meterRegistry;
+
+    @Autowired
+    private HealthEndpoint healthEndpoint;
 
     @Value("${spring.kafka.consumer.group-id}")
     private String groupId;
@@ -189,6 +196,8 @@ class BetStoreWriterIT {
         properties.put("bet-store.consumers.abp.topic", DISABLED_ABP_TOPIC);
         properties.put("bet-store.consumers.fbp.topic", DISABLED_FBP_TOPIC);
         properties.put("spring.kafka.consumer.group-id", disabledGroupId);
+        // The second context cannot share the actuator HTTP port with the first one
+        properties.put("server.port", "0");
         // Command line arguments: they take precedence over application.yml (builder "properties" would not)
         String[] args = properties.entrySet().stream().map(e -> "--" + e.getKey() + "=" + e.getValue())
                 .toArray(String[]::new);
@@ -247,6 +256,50 @@ class BetStoreWriterIT {
 
         await().atMost(Duration.ofSeconds(120)).until(() -> rowByAccount(betId).isPresent() && rowById(betId).isPresent());
         await().atMost(STORE_TIMEOUT).until(() -> committedOffset(groupId, FBP_TOPIC).orElse(-1) == offset + 1);
+    }
+
+    /**
+     * Spec section 10: the Kafka client metrics, including the lag per partition, are published. The consumer
+     * factories are built by the writer, so this fails if Boot's Micrometer consumer listener is not applied to them.
+     * Micrometer binds a client metric once the client has registered it, and rescans for new ones every minute.
+     */
+    @Test
+    void kafkaConsumerLagIsPublishedPerPartition() {
+        String betId = "O/IT/LAG/0001";
+
+        send(FBP_TOPIC, betId, fbpEvent(betId, 1_785_343_197_501L, false));
+        await().atMost(STORE_TIMEOUT).until(() -> rowByAccount(betId).isPresent());
+
+        await().atMost(Duration.ofSeconds(150)).untilAsserted(() ->
+                assertThat(meterRegistry.find("kafka.consumer.fetch.manager.records.lag")
+                        .tag("topic", FBP_TOPIC).tag("partition", "0").gauge()).isNotNull());
+    }
+
+    /** The kafka component reports the running listeners and the reachable broker, cassandra comes from Boot. */
+    @Test
+    void healthReportsCassandraAndKafkaUp() {
+        CompositeHealthDescriptor health = (CompositeHealthDescriptor) healthEndpoint.health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.UP);
+        assertThat(health.getComponents()).containsKeys("cassandra", "kafka");
+        assertThat(health.getComponents().get("cassandra").getStatus()).isEqualTo(Status.UP);
+        assertThat(health.getComponents().get("kafka").getStatus()).isEqualTo(Status.UP);
+    }
+
+    /** Every upsert and delete is timed, with the outcome as a tag. */
+    @Test
+    void cassandraWritesAreTimed() {
+        String betId = "O/IT/TIMER/0001";
+        double upserts = writeCount("upsert");
+        double deletes = writeCount("delete");
+
+        send(FBP_TOPIC, betId, fbpEvent(betId, 1_785_343_197_501L, false));
+        await().atMost(STORE_TIMEOUT).until(() -> rowByAccount(betId).isPresent());
+        send(FBP_TOPIC, betId, fbpEvent(betId, 1_785_343_198_501L, true));
+        await().atMost(STORE_TIMEOUT).until(() -> rowByAccount(betId).isEmpty());
+
+        assertThat(writeCount("upsert")).isEqualTo(upserts + 1);
+        assertThat(writeCount("delete")).isEqualTo(deletes + 1);
     }
 
     // ------------------------------------------------------------------------------------------------ fixtures
@@ -343,6 +396,12 @@ class BetStoreWriterIT {
         } catch (ExecutionException | TimeoutException e) {
             throw new IllegalStateException("Cannot read committed offsets of " + group, e);
         }
+    }
+
+    private double writeCount(String operation) {
+        Timer timer = meterRegistry.find("betstore.writer.cassandra.write")
+                .tag("operation", operation).tag("outcome", "success").timer();
+        return timer == null ? 0 : timer.count();
     }
 
     private static boolean listensTo(MessageListenerContainer container, String topic) {

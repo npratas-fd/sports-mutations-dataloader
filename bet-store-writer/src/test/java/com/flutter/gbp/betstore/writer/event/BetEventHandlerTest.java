@@ -14,6 +14,7 @@ import com.flutter.gbp.betstore.cassandra.BetWriteRepository;
 import com.flutter.gbp.betstore.writer.config.WriterProperties.TimestampField;
 import com.flutter.gbp.betstore.writer.event.BetEventHandler.Outcome;
 import com.flutter.gbp.fcq.bet.Bet;
+import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.util.Map;
@@ -193,6 +194,35 @@ class BetEventHandlerTest {
 
         assertThat(meterRegistry.get("betstore.writer.source.creation.latency")
                 .tag("source", "fbp").tag("sourceTag", "gbp").timer().count()).isEqualTo(2);
+    }
+
+    @Test
+    void cassandraWritesAreTimedPerOperation() {
+        BetEventHandler handler = handler(true);
+
+        handler.handle(fbpEvent().build());
+        handler.handle(fbpEvent().build());
+        handler.handle(fbpEvent().settled(true).build());
+        handler.handle(fbpEvent().virtual(true).build());
+
+        assertThat(writeTimer("upsert", "success").count()).isEqualTo(2);
+        assertThat(writeTimer("delete", "success").count()).isEqualTo(1);
+    }
+
+    @Test
+    void failedCassandraWritesAreTimedAsFailures() {
+        doThrow(new DriverTimeoutException("timeout")).when(repository).upsert(any(BetRecord.class));
+        BetEventHandler handler = handler(true);
+
+        assertThatThrownBy(() -> handler.handle(fbpEvent().build())).isInstanceOf(DriverTimeoutException.class);
+
+        assertThat(writeTimer("upsert", "failure").count()).isEqualTo(1);
+        assertThat(meterRegistry.find("betstore.writer.cassandra.write").tag("outcome", "success").timer()).isNull();
+    }
+
+    private Timer writeTimer(String operation, String outcome) {
+        return meterRegistry.get("betstore.writer.cassandra.write")
+                .tag("operation", operation).tag("outcome", outcome).timer();
     }
 
     private double eventCount(String source, Outcome outcome) {

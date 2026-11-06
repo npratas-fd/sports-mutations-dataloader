@@ -1,8 +1,6 @@
 spring:
   application:
     name: bet-store-writer
-  main:
-    web-application-type: none
   cassandra:
     # The keyspace and tables are provisioned by infra (cql/bet_store.cql in tests)
     keyspace-name: bet_store
@@ -19,6 +17,20 @@ spring:
       # One consumer thread per container: records of a partition are processed one at a time, in order.
       # Raise it at most to the number of partitions of the topic.
       concurrency: 1
+
+# The writer has no API: the embedded HTTP server only serves the actuator endpoints
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      # Lists the components (cassandra, kafka) without their details
+      show-components: always
 
 bet-store:
   consumers:

@@ -37,6 +37,8 @@ public class BetEventHandler {
 
     /** Counter of handled events, tagged with {@code source} and {@code outcome}. */
     public static final String EVENTS_METRIC = "betstore.writer.events";
+    /** Timer of the Cassandra writes, tagged with {@code operation} (upsert, delete) and {@code outcome} (success, failure). */
+    public static final String WRITE_METRIC = "betstore.writer.cassandra.write";
     static final String LATENCY_METRIC = "betstore.writer.source.creation.latency";
 
     /**
@@ -114,7 +116,7 @@ public class BetEventHandler {
         if (event.settled()) {
             LOGGER.debug("Deleting the bet, source: {}, betId: {}, accountId: {}, writeTimestampMicros: {}",
                     event.source(), event.betId(), accountId, writeTimestampMicros);
-            repository.delete(accountId, event.betId(), writeTimestampMicros);
+            timedWrite("delete", () -> repository.delete(accountId, event.betId(), writeTimestampMicros));
             return Outcome.DELETED;
         }
 
@@ -136,9 +138,29 @@ public class BetEventHandler {
         }
 
         LOGGER.debug("Persisting the bet, source: {}, betId: {}, accountId: {}", event.source(), event.betId(), accountId);
-        repository.upsert(new BetRecord(accountId, event.betId(), Instant.ofEpochMilli(creationTimeMillis.getAsLong()),
-                bet, writeTimestampMicros.getAsLong()));
+        BetRecord record = new BetRecord(accountId, event.betId(), Instant.ofEpochMilli(creationTimeMillis.getAsLong()),
+                bet, writeTimestampMicros.getAsLong());
+        timedWrite("upsert", () -> repository.upsert(record));
         return Outcome.UPSERTED;
+    }
+
+    /**
+     * Runs a Cassandra write and records its duration in {@value #WRITE_METRIC}, tagged with the {@code operation} and
+     * whether it succeeded. Failures are rethrown unchanged.
+     */
+    private void timedWrite(String operation, Runnable write) {
+        Timer.Sample sample = Timer.start(meterRegistry);
+        String outcome = "failure";
+        try {
+            write.run();
+            outcome = "success";
+        } finally {
+            sample.stop(Timer.builder(WRITE_METRIC)
+                    .tag("operation", operation)
+                    .tag("outcome", outcome)
+                    .publishPercentiles(0.5, 0.95, 0.99)
+                    .register(meterRegistry));
+        }
     }
 
     private void recordCreationLatency(SourceEvent event) {

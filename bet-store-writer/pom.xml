@@ -83,6 +83,20 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-micrometer-metrics</artifactId>
         </dependency>
+        <dependency>
+            <!-- /actuator/health (Cassandra, Kafka in the writer) and /actuator/prometheus -->
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+        <dependency>
+            <!-- HTTP server for the actuator endpoints only (the writer has no API) -->
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc</artifactId>
+        </dependency>
 
         <!-- Tests: the converter tests copied from FCQ use TestNG; new tests use JUnit Jupiter.
              Both run on the JUnit Platform (testng-engine). -->

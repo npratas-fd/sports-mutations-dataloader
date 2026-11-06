@@ -61,6 +61,35 @@ class BetStoreReaderIT {
         assertThat(get("/v1/accounts/1/bets").getBetsList()).isEqualTo(List.of());
     }
 
+    @Test
+    void healthReportsCassandraUp() {
+        String health = text("/actuator/health");
+
+        assertThat(health).contains("\"status\":\"UP\"").contains("\"cassandra\":{\"status\":\"UP\"");
+    }
+
+    /** p50/p95/p99 of http.server.requests per endpoint (tag uri) are published for Prometheus / Datadog. */
+    @Test
+    void prometheusPublishesRequestLatencyPercentilesPerEndpoint() {
+        get("/v1/accounts/" + ACCOUNT_ID + "/bets");
+
+        String metrics = text("/actuator/prometheus");
+
+        for (String quantile : List.of("0.5", "0.95", "0.99")) {
+            assertThat(metrics).containsPattern(
+                    "http_server_requests_seconds\\{[^}]*quantile=\"" + quantile + "\"[^}]*uri=\"/v1/accounts/\\{accountId\\}/bets\"|"
+                            + "http_server_requests_seconds\\{[^}]*uri=\"/v1/accounts/\\{accountId\\}/bets\"[^}]*quantile=\"" + quantile + "\"");
+        }
+    }
+
+    private String text(String path) {
+        return RestClient.create().get()
+                .uri(URI.create("http://localhost:" + port + path))
+                .header(HttpHeaders.ACCEPT, MediaType.ALL_VALUE)
+                .retrieve()
+                .body(String.class);
+    }
+
     private BetList get(String path) {
         byte[] body = RestClient.create().get()
                 .uri(URI.create("http://localhost:" + port + path))
