@@ -6,6 +6,7 @@ import com.datastax.oss.driver.api.core.CqlSession;
 import com.flutter.gbp.fcq.bet.Bet;
 import java.nio.ByteBuffer;
 import java.time.Instant;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
@@ -55,11 +56,30 @@ class BetReadRepositoryIT {
     }
 
     @Test
+    void findByAccountAndBetIdsWithEmptySetReturnsEmpty() {
+        write(ACCOUNT_1, "a");
+
+        assertThat(reader.findByAccountAndBetIds(ACCOUNT_1, Set.of())).isEmpty();
+    }
+
+    @Test
+    void findByAccountAndBetIdsRespectsLimitAndOrder() {
+        write(ACCOUNT_1, "c");
+        write(ACCOUNT_1, "a");
+        write(ACCOUNT_1, "b");
+
+        BetReadRepository limited = new BetReadRepository(session, 2);
+
+        assertThat(receipts(limited.findByAccountAndBetIds(ACCOUNT_1, new LinkedHashSet<>(List.of("c", "a", "b")))))
+                .containsExactly("a", "b");
+    }
+
+    @Test
     void findByBetIdsAcrossAccounts() {
         write(ACCOUNT_2, "z");
         write(ACCOUNT_1, "a");
 
-        assertThat(receipts(reader.findByBetIds(Set.of("z", "a", "missing")))).containsExactly("a", "z");
+        assertThat(receipts(reader.findByBetIds(new LinkedHashSet<>(List.of("z", "a", "missing"))))).containsExactly("a", "z");
     }
 
     @Test
