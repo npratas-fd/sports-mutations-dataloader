@@ -13,6 +13,7 @@
     <modules>
         <module>bet-store-model</module>
         <module>bet-store-cassandra</module>
+        <module>bet-store-writer</module>
     </modules>
 
     <properties>
@@ -25,18 +26,27 @@
         <fcq-bet-definition.version>0.32</fcq-bet-definition.version>
         <fbp-message-definition.version>1.74</fbp-message-definition.version>
         <abp-message-definition.version>1.19</abp-message-definition.version>
+        <sb-bet-context-lib.version>1.24</sb-bet-context-lib.version>
 
         <!-- Protobuf: the runtime is newer than the 3.19.6 used to generate fcq-bet-definition (gencode older than runtime is supported) -->
         <protobuf-java.version>4.35.1</protobuf-java.version>
         <protobuf-java-util.version>4.35.1</protobuf-java-util.version>
 
         <guava.version>33.4.8-jre</guava.version>
-        <mapstruct.version>1.6.3</mapstruct.version>
+        <!-- Same MapStruct as FCQ so the generated mappers of the copied converters are identical -->
+        <mapstruct.version>1.5.3.Final</mapstruct.version>
+        <jsr305.version>3.0.2</jsr305.version>
+        <testng.version>7.7.0</testng.version>
+        <testng-engine.version>1.0.6</testng-engine.version>
+
+        <!-- Default for surefire/failsafe late replacement (@{argLine}) when no other plugin sets it -->
+        <argLine/>
 
         <!-- Plugins -->
         <maven-compiler-plugin.version>3.14.1</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.5.4</maven-surefire-plugin.version>
         <maven-failsafe-plugin.version>3.5.2</maven-failsafe-plugin.version>
+        <maven-dependency-plugin.version>3.8.1</maven-dependency-plugin.version>
         <protobuf-maven-plugin.version>0.6.1</protobuf-maven-plugin.version>
         <os-maven-plugin.version>1.7.1</os-maven-plugin.version>
     </properties>
@@ -92,8 +102,37 @@
                 <artifactId>mapstruct-processor</artifactId>
                 <version>${mapstruct.version}</version>
             </dependency>
+            <dependency>
+                <groupId>com.flutter.gbp</groupId>
+                <artifactId>sb-bet-context-encoders</artifactId>
+                <version>${sb-bet-context-lib.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.google.code.findbugs</groupId>
+                <artifactId>jsr305</artifactId>
+                <version>${jsr305.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.testng</groupId>
+                <artifactId>testng</artifactId>
+                <version>${testng.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.junit.support</groupId>
+                <artifactId>testng-engine</artifactId>
+                <version>${testng-engine.version}</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
+
+    <dependencies>
+        <!-- Every module gets Mockito on the test classpath so the javaagent configured below always resolves -->
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
 
     <build>
         <extensions>
@@ -111,15 +150,36 @@
                     <artifactId>maven-compiler-plugin</artifactId>
                     <version>${maven-compiler-plugin.version}</version>
                 </plugin>
+                <!-- Mockito cannot self-attach on Java 25 here: expose the mockito-core jar path as the
+                     ${org.mockito:mockito-core:jar} property and load it as a javaagent in tests -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-dependency-plugin</artifactId>
+                    <version>${maven-dependency-plugin.version}</version>
+                    <executions>
+                        <execution>
+                            <id>dependency-properties</id>
+                            <goals>
+                                <goal>properties</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>${maven-surefire-plugin.version}</version>
+                    <configuration>
+                        <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
+                    </configuration>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-failsafe-plugin</artifactId>
                     <version>${maven-failsafe-plugin.version}</version>
+                    <configuration>
+                        <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
+                    </configuration>
                 </plugin>
                 <plugin>
                     <groupId>org.xolstice.maven.plugins</groupId>
@@ -140,5 +200,12 @@
                 </plugin>
             </plugins>
         </pluginManagement>
+
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+            </plugin>
+        </plugins>
     </build>
 </project>
