@@ -13,6 +13,11 @@
     <artifactId>bet-store-model</artifactId>
     <name>bet-store-model</name>
 
+    <properties>
+        <!-- Consumed by the Java 11 FCQ service through bet-store-client -->
+        <maven.compiler.release>11</maven.compiler.release>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>com.flutter.gbp</groupId>

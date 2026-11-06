@@ -12,6 +12,7 @@
 
     <modules>
         <module>bet-store-model</module>
+        <module>bet-store-client</module>
         <module>bet-store-cassandra</module>
         <module>bet-store-writer</module>
         <module>bet-store-reader</module>
@@ -37,6 +38,7 @@
         <!-- Same MapStruct as FCQ so the generated mappers of the copied converters are identical -->
         <mapstruct.version>1.5.3.Final</mapstruct.version>
         <jsr305.version>3.0.2</jsr305.version>
+        <wiremock.version>3.13.1</wiremock.version>
         <testng.version>7.7.0</testng.version>
         <testng-engine.version>1.0.6</testng-engine.version>
 
@@ -112,6 +114,11 @@
                 <groupId>com.google.code.findbugs</groupId>
                 <artifactId>jsr305</artifactId>
                 <version>${jsr305.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.wiremock</groupId>
+                <artifactId>wiremock-standalone</artifactId>
+                <version>${wiremock.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.testng</groupId>
