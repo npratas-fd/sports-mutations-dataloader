@@ -179,9 +179,9 @@ class BetEventHandlerTest {
         handler.handle(fbpEvent().hasObpLeg(true).build());
         handler.handle(abpEvent().settled(true).build());
 
-        assertThat(eventCount("fbp", Outcome.UPSERTED)).isEqualTo(1.0);
-        assertThat(eventCount("fbp", Outcome.SKIPPED_OBP)).isEqualTo(1.0);
-        assertThat(eventCount("abp", Outcome.DELETED)).isEqualTo(1.0);
+        assertThat(eventCount("fbp", "gbp", Outcome.UPSERTED)).isEqualTo(1.0);
+        assertThat(eventCount("fbp", "gbp", Outcome.SKIPPED_OBP)).isEqualTo(1.0);
+        assertThat(eventCount("abp", "unspecified", Outcome.DELETED)).isEqualTo(1.0);
     }
 
     @Test
@@ -225,9 +225,9 @@ class BetEventHandlerTest {
                 .tag("operation", operation).tag("outcome", outcome).timer();
     }
 
-    private double eventCount(String source, Outcome outcome) {
+    private double eventCount(String source, String sourceTag, Outcome outcome) {
         return meterRegistry.get("betstore.writer.events")
-                .tag("source", source).tag("outcome", outcome.name()).counter().count();
+                .tag("source", source).tag("sourceTag", sourceTag).tag("outcome", outcome.name()).counter().count();
     }
 
     private BetEventHandler handler(boolean obpBetsProcessing) {

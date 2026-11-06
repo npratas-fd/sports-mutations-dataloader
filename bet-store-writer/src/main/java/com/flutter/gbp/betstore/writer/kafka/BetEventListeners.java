@@ -22,7 +22,7 @@ import org.springframework.kafka.annotation.KafkaListener;
  * {@link KafkaConfiguration}, which retries the record without committing it.
  *
  * <p>An event without a bet (including an empty payload, which the deserializer turns into {@code null}) is logged,
- * counted as {@code betstore.writer.events{source, outcome=SKIPPED_NO_BET}} and skipped (its offset is committed).
+ * counted as {@code betstore.writer.events{source, sourceTag=unspecified, outcome=SKIPPED_NO_BET}} and skipped (its offset is committed).
  *
  * <p>Each listener starts only when {@code bet-store.consumers.<fbp|abp>.enabled} is {@code true} (the default).
  * {@code idIsGroup = false}: both listeners use {@code spring.kafka.consumer.group-id}.
@@ -91,6 +91,7 @@ public class BetEventListeners {
                     record.topic(), record.partition(), record.offset(), record.key());
             Counter.builder(BetEventHandler.EVENTS_METRIC)
                     .tag("source", source)
+                    .tag("sourceTag", SourceEvent.UNSPECIFIED_SOURCE_TAG)
                     .tag("outcome", SKIPPED_NO_BET)
                     .register(meterRegistry)
                     .increment();

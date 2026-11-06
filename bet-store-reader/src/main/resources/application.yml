@@ -19,9 +19,9 @@ management:
       show-components: always
   metrics:
     distribution:
-      percentiles:
-        # p50/p95/p99 per endpoint (tag "uri") of http.server.requests
-        "[http.server.requests]": 0.5,0.95,0.99
+      percentiles-histogram:
+        # Histogram buckets per endpoint (tag "uri"): aggregable across instances, p50/p95/p99 are computed by the backend
+        "[http.server.requests]": true
 
 bet-store:
   reader:

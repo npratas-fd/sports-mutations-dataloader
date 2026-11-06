@@ -68,18 +68,17 @@ class BetStoreReaderIT {
         assertThat(health).contains("\"status\":\"UP\"").contains("\"cassandra\":{\"status\":\"UP\"");
     }
 
-    /** p50/p95/p99 of http.server.requests per endpoint (tag uri) are published for Prometheus / Datadog. */
+    /** http.server.requests is published as a histogram per endpoint (tag uri), aggregable across instances. */
     @Test
-    void prometheusPublishesRequestLatencyPercentilesPerEndpoint() {
-        get("/v1/accounts/" + ACCOUNT_ID + "/bets");
+    void prometheusPublishesRequestLatencyHistogramPerEndpoint() {
+        get("/v1/accounts/" + ACCOUNT_ID + "/bets?betIds=a,b");
 
         String metrics = text("/actuator/prometheus");
 
-        for (String quantile : List.of("0.5", "0.95", "0.99")) {
-            assertThat(metrics).containsPattern(
-                    "http_server_requests_seconds\\{[^}]*quantile=\"" + quantile + "\"[^}]*uri=\"/v1/accounts/\\{accountId\\}/bets\"|"
-                            + "http_server_requests_seconds\\{[^}]*uri=\"/v1/accounts/\\{accountId\\}/bets\"[^}]*quantile=\"" + quantile + "\"");
-        }
+        assertThat(metrics).containsPattern(
+                "http_server_requests_seconds_bucket\\{[^}]*uri=\"/v1/accounts/\\{accountId\\}/bets\"[^}]*le=\"");
+        assertThat(metrics).contains("betstore_reader_bet_ids_requested_count{endpoint=\"account\"}")
+                .contains("betstore_reader_bets_returned_count{endpoint=\"account\"}");
     }
 
     private String text(String path) {

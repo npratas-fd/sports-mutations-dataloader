@@ -35,7 +35,7 @@ public class BetEventHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(BetEventHandler.class);
 
-    /** Counter of handled events, tagged with {@code source} and {@code outcome}. */
+    /** Counter of handled events, tagged with {@code source}, {@code sourceTag} and {@code outcome}. */
     public static final String EVENTS_METRIC = "betstore.writer.events";
     /** Timer of the Cassandra writes, tagged with {@code operation} (upsert, delete) and {@code outcome} (success, failure). */
     public static final String WRITE_METRIC = "betstore.writer.cassandra.write";
@@ -85,6 +85,7 @@ public class BetEventHandler {
         Outcome outcome = process(event);
         Counter.builder(EVENTS_METRIC)
                 .tag("source", event.source())
+                .tag("sourceTag", event.sourceTag())
                 .tag("outcome", outcome.name())
                 .register(meterRegistry)
                 .increment();
@@ -158,7 +159,7 @@ public class BetEventHandler {
             sample.stop(Timer.builder(WRITE_METRIC)
                     .tag("operation", operation)
                     .tag("outcome", outcome)
-                    .publishPercentiles(0.5, 0.95, 0.99)
+                    .publishPercentileHistogram()
                     .register(meterRegistry));
         }
     }

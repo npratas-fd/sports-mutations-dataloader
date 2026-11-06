@@ -21,9 +21,14 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import io.micrometer.core.instrument.DistributionSummary;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -44,6 +49,17 @@ class BetQueryControllerTest {
 
     @MockitoBean
     private BetReadRepository repository;
+
+    @Autowired
+    private MeterRegistry meterRegistry;
+
+    @TestConfiguration
+    static class MetricsConfiguration {
+        @Bean
+        MeterRegistry meterRegistry() {
+            return new SimpleMeterRegistry();
+        }
+    }
 
     @Test
     void accountWithoutBetIdsCallsFindByAccount() throws Exception {
@@ -145,6 +161,31 @@ class BetQueryControllerTest {
         mvc.perform(get("/v1/accounts/7/bets"))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON));
+    }
+
+    @Test
+    void requestedAndReturnedBetsAreRecordedPerEndpoint() throws Exception {
+        // The registry is shared by the tests of this context
+        meterRegistry.clear();
+        when(repository.findByAccount(7L)).thenReturn(List.of(bet("a"), bet("b"), bet("c")));
+        when(repository.findByAccountAndBetIds(7L, Set.of("a", "z"))).thenReturn(List.of(bet("a")));
+        when(repository.findByBetIds(Set.of("x", "y", "w"))).thenReturn(List.of(bet("x")));
+
+        mvc.perform(get("/v1/accounts/7/bets"));
+        mvc.perform(get("/v1/accounts/7/bets").param("betIds", "a,z"));
+        mvc.perform(get("/v1/bets").param("betIds", "x,y,w"));
+
+        // No filter: only the returned count is recorded
+        assertThat(summary("betstore.reader.bet.ids.requested", "account").count()).isEqualTo(1);
+        assertThat(summary("betstore.reader.bet.ids.requested", "account").totalAmount()).isEqualTo(2.0);
+        assertThat(summary("betstore.reader.bets.returned", "account").count()).isEqualTo(2);
+        assertThat(summary("betstore.reader.bets.returned", "account").totalAmount()).isEqualTo(4.0);
+        assertThat(summary("betstore.reader.bet.ids.requested", "bets").totalAmount()).isEqualTo(3.0);
+        assertThat(summary("betstore.reader.bets.returned", "bets").totalAmount()).isEqualTo(1.0);
+    }
+
+    private DistributionSummary summary(String name, String endpoint) {
+        return meterRegistry.get(name).tag("endpoint", endpoint).summary();
     }
 
     private static Bet bet(String receiptId) {

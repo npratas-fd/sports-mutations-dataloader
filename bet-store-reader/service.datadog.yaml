@@ -11,12 +11,12 @@ languages:
 contacts:
   - type: slack
     name: "TODO-slack-channel"
-    contact: https://fanduel.slack.com/archives/TODO-CHANNEL-ID
+    contact: TODO-slack-channel-url
 links:
   - name: bet-store-service
     type: repo
     provider: github
-    url: https://github.com/fanduel/bet-store-service # TODO: confirm repository location
+    url: TODO-repo-url
   - name: Build Pipeline
     type: other
     url: TODO-build-pipeline-url

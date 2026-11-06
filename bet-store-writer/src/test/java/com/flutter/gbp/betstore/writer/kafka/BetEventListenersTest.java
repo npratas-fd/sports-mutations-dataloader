@@ -50,7 +50,7 @@ class BetEventListenersTest {
 
     private double skippedNoBet(String source) {
         var counter = meterRegistry.find(BetEventHandler.EVENTS_METRIC)
-                .tags("source", source, "outcome", BetEventListeners.SKIPPED_NO_BET)
+                .tags("source", source, "sourceTag", "unspecified", "outcome", BetEventListeners.SKIPPED_NO_BET)
                 .counter();
         return counter == null ? 0.0 : counter.count();
     }

@@ -105,12 +105,14 @@ The reader answers `503` when Cassandra is unavailable.
 | Metric | App | Tags | Notes |
 | --- | --- | --- | --- |
 | `kafka.consumer.fetch.manager.records.lag` | writer | `topic`, `partition`, `client.id` | Lag per partition (Kafka client metrics, with the other `kafka.consumer.*`). Published once the consumer has fetched; Micrometer binds new client metrics up to a minute later. |
-| `betstore.writer.events` | writer | `source` (`fbp`/`abp`), `outcome` | Events handled: `UPSERTED`, `DELETED`, `SKIPPED_VIRTUAL`, `SKIPPED_OBP`, `SKIPPED_INVALID_ACCOUNT`, `SKIPPED_NO_TIMESTAMP`, `SKIPPED_CONVERSION_ERROR`, `SKIPPED_NO_BET`. |
+| `betstore.writer.events` | writer | `source` (`fbp`/`abp`), `sourceTag` (lower-case bet source tag, `unspecified` if unknown or absent), `outcome` | Events handled: `UPSERTED`, `DELETED`, `SKIPPED_VIRTUAL`, `SKIPPED_OBP`, `SKIPPED_INVALID_ACCOUNT`, `SKIPPED_NO_TIMESTAMP`, `SKIPPED_CONVERSION_ERROR`, `SKIPPED_NO_BET`. |
 | `betstore.writer.source.creation.latency` | writer | `source`, `sourceTag` | `now - CREATION_TIME`; same measurement as FCQ's `source.creation.time.latency.millis`. |
-| `betstore.writer.cassandra.write` | writer | `operation` (`upsert`/`delete`), `outcome` (`success`/`failure`) | Timer of each Cassandra write, with p50/p95/p99. |
+| `betstore.writer.cassandra.write` | writer | `operation` (`upsert`/`delete`), `outcome` (`success`/`failure`) | Timer of each Cassandra write, published as a histogram (p50/p95/p99 computed by the backend). |
 | `betstore.writer.cassandra.retries` | writer | `topic` | Failed Cassandra writes that are being retried. |
 | `betstore.writer.records.skipped` | writer | `topic`, `exception` | Records skipped after a non-Cassandra failure. |
-| `http.server.requests` | reader | `uri`, `method`, `status`, `outcome`, `exception` | Latency p50/p95/p99 per endpoint (`uri`) and errors by type. |
+| `betstore.reader.bet.ids.requested` | reader | `endpoint` (`account`/`bets`) | Distribution summary: distinct ids per request. Not recorded for an account query without `betIds`. |
+| `betstore.reader.bets.returned` | reader | `endpoint` (`account`/`bets`) | Distribution summary: bets returned per request. |
+| `http.server.requests` | reader | `uri`, `method`, `status`, `outcome`, `exception` | Latency histogram per endpoint (`uri`; p50/p95/p99 computed by the backend) and errors by type. |
 
 ## Service catalog
 
