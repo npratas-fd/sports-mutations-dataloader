@@ -60,6 +60,12 @@ public final class CassandraTestSupport {
         return container.getLocalDatacenter();
     }
 
+    /** Docker id of the shared container, for tests that simulate an outage (e.g. pause/unpause). */
+    public static synchronized String containerId() {
+        session();
+        return container.getContainerId();
+    }
+
     private static synchronized void stop() {
         if (session != null) {
             session.close();

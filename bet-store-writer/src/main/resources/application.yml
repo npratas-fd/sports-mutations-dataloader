@@ -1,0 +1,30 @@
+spring:
+  application:
+    name: bet-store-writer
+  main:
+    web-application-type: none
+  cassandra:
+    # The keyspace and tables are provisioned by infra (cql/bet_store.cql in tests)
+    keyspace-name: bet_store
+  kafka:
+    consumer:
+      group-id: bet-store-writer
+      # First start of the consumer group: no backfill, read what is still in the topic retention
+      auto-offset-reset: earliest
+      # Offsets are committed by the listener container, record by record, after the Cassandra write
+      enable-auto-commit: false
+      # Deserializers are set in KafkaConfiguration (String keys, FBP/ABP protobuf values)
+    listener:
+      ack-mode: record
+      # One consumer thread per container: records of a partition are processed one at a time, in order.
+      # Raise it at most to the number of partitions of the topic.
+      concurrency: 1
+
+bet-store:
+  consumers:
+    fbp:
+      enabled: true
+      topic: sb_bet_processor_topic
+    abp:
+      enabled: true
+      topic: retail_bet_processor_topic
