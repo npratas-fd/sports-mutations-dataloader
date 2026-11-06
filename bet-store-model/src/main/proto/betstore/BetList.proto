@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package com.flutter.gbp.betstore.api;
+
+import "bet/Bet.proto";
+
+option java_multiple_files = true;
+option java_package = "com.flutter.gbp.betstore.api";
+
+message BetList {
+  repeated com.flutter.gbp.fcq.bet.Bet bets = 1;
+}
