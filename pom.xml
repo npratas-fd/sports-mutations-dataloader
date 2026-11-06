@@ -12,6 +12,7 @@
 
     <modules>
         <module>bet-store-model</module>
+        <module>bet-store-cassandra</module>
     </modules>
 
     <properties>
