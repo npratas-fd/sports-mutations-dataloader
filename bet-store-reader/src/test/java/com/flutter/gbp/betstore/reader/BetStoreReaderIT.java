@@ -2,6 +2,8 @@ package com.flutter.gbp.betstore.reader;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.datastax.oss.driver.api.core.CqlSession;
+import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
 import com.flutter.gbp.betstore.api.BetList;
 import com.flutter.gbp.betstore.cassandra.BetRecord;
 import com.flutter.gbp.betstore.cassandra.BetWriteRepository;
@@ -12,6 +14,7 @@ import java.time.Instant;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpHeaders;
@@ -31,6 +34,9 @@ class BetStoreReaderIT {
 
     @LocalServerPort
     private int port;
+
+    @Autowired
+    private CqlSession session;
 
     @DynamicPropertySource
     static void cassandra(DynamicPropertyRegistry registry) {
@@ -59,6 +65,13 @@ class BetStoreReaderIT {
                 .containsExactly(second);
         assertThat(get("/v1/bets?betIds=R/IT/0003,R/IT/0001,missing").getBetsList()).containsExactly(first, other);
         assertThat(get("/v1/accounts/1/bets").getBetsList()).isEqualTo(List.of());
+    }
+
+    /** LOCAL_QUORUM like FCQ: LOCAL_ONE could serve a settled bet from a replica that has not seen the delete. */
+    @Test
+    void cassandraQueriesUseLocalQuorum() {
+        assertThat(session.getContext().getConfig().getDefaultProfile()
+                .getString(DefaultDriverOption.REQUEST_CONSISTENCY)).isEqualTo("LOCAL_QUORUM");
     }
 
     @Test

@@ -124,12 +124,53 @@ class BetQueryControllerTest {
     }
 
     @Test
-    void betIdsAboveMaxIs400() throws Exception {
-        String ids = IntStream.rangeClosed(1, properties.maxBetIds() + 1).mapToObj(i -> "b" + i)
-                .collect(Collectors.joining(","));
+    void betIdsEndpointAboveMaxBetIdsIs400() throws Exception {
+        mvc.perform(get("/v1/bets").param("betIds", ids(properties.maxBetIds() + 1))).andExpect(status().isBadRequest());
 
-        mvc.perform(get("/v1/bets").param("betIds", ids)).andExpect(status().isBadRequest());
-        mvc.perform(get("/v1/accounts/7/bets").param("betIds", ids)).andExpect(status().isBadRequest());
+        verify(repository, never()).findByBetIds(any());
+    }
+
+    @Test
+    void betIdsEndpointAtMaxBetIdsIsAccepted() throws Exception {
+        mvc.perform(get("/v1/bets").param("betIds", ids(properties.maxBetIds()))).andExpect(status().isOk());
+    }
+
+    /** FCQ accepts any number of ids for an account and caps the result (ORDER BY bet_id LIMIT 70), so must we. */
+    @Test
+    void accountEndpointAcceptsMoreThanMaxBetIdsAndLeavesTheCapToTheRepository() throws Exception {
+        int count = properties.maxBetIds() + 1;
+        when(repository.findByAccountAndBetIds(any(Long.class), any())).thenReturn(List.of(bet("b1")));
+
+        mvc.perform(get("/v1/accounts/7/bets").param("betIds", ids(count))).andExpect(status().isOk());
+
+        verify(repository).findByAccountAndBetIds(7L, IntStream.rangeClosed(1, count).mapToObj(i -> "b" + i)
+                .collect(Collectors.toCollection(LinkedHashSet::new)));
+    }
+
+    @Test
+    void accountEndpointAtMaxAccountBetIdsIsAccepted() throws Exception {
+        mvc.perform(get("/v1/accounts/7/bets").param("betIds", ids(properties.maxAccountBetIds())))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void accountEndpointAboveMaxAccountBetIdsIs400() throws Exception {
+        mvc.perform(get("/v1/accounts/7/bets").param("betIds", ids(properties.maxAccountBetIds() + 1)))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON));
+
+        verify(repository, never()).findByAccountAndBetIds(any(Long.class), any());
+    }
+
+    @Test
+    void defaultLimits() {
+        assertThat(properties.betLimit()).isEqualTo(70);
+        assertThat(properties.maxBetIds()).isEqualTo(70);
+        assertThat(properties.maxAccountBetIds()).isEqualTo(1000);
+    }
+
+    private static String ids(int count) {
+        return IntStream.rangeClosed(1, count).mapToObj(i -> "b" + i).collect(Collectors.joining(","));
     }
 
     @Test

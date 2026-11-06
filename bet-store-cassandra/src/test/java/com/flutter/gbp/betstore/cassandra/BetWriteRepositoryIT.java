@@ -16,6 +16,7 @@ class BetWriteRepositoryIT {
 
     private static final long ACCOUNT_ID = 42L;
     private static final String BET_ID = "bet-1";
+    private static final String OTHER_KEYSPACE = "bet_store_other";
 
     private final CqlSession session = CassandraTestSupport.session();
     private final BetWriteRepository repository = new BetWriteRepository(session);
@@ -95,6 +96,60 @@ class BetWriteRepositoryIT {
         assertNoRows();
     }
 
+    /**
+     * The blob is written twice in the batch, so ~30 KB of bet exceeds Cassandra's default
+     * {@code batch_size_fail_threshold} (50 KiB) and the batch is rejected with "Batch too large".
+     */
+    @Test
+    void oversizedBatchFallsBackToSeparateInsertsAndKeepsTimestampOrder() {
+        Bet large = largeBet("L", 30_000);
+        Bet older = largeBet("O", 30_000);
+
+        BetWriteRepository.WriteMode mode =
+                repository.upsert(new BetRecord(ACCOUNT_ID, BET_ID, Instant.ofEpochMilli(2), large, 2000L));
+        BetWriteRepository.WriteMode olderMode =
+                repository.upsert(new BetRecord(ACCOUNT_ID, BET_ID, Instant.ofEpochMilli(1), older, 1000L));
+
+        assertThat(mode).isEqualTo(BetWriteRepository.WriteMode.UNBATCHED);
+        assertThat(olderMode).isEqualTo(BetWriteRepository.WriteMode.UNBATCHED);
+        assertThat(storedBet("SELECT bet FROM bet_store.bets WHERE account_id = ? AND bet_id = ?", ACCOUNT_ID, BET_ID))
+                .contains(large);
+        assertThat(storedBet("SELECT bet FROM bet_store.bets_by_id WHERE bet_id = ?", BET_ID)).contains(large);
+
+        repository.delete(ACCOUNT_ID, BET_ID, OptionalLong.of(3000L));
+
+        assertNoRows();
+    }
+
+    @Test
+    void smallBetIsWrittenInALoggedBatch() {
+        assertThat(repository.upsert(new BetRecord(ACCOUNT_ID, BET_ID, Instant.ofEpochMilli(1), bet("A"), 1000L)))
+                .isEqualTo(BetWriteRepository.WriteMode.LOGGED_BATCH);
+    }
+
+    @Test
+    void writesGoToTheSessionKeyspace() {
+        CqlSession other = CassandraTestSupport.sessionForKeyspace(OTHER_KEYSPACE);
+        other.execute("TRUNCATE bets");
+        other.execute("TRUNCATE bets_by_id");
+        BetWriteRepository otherRepository = new BetWriteRepository(other);
+        Bet a = bet("A");
+
+        otherRepository.upsert(new BetRecord(ACCOUNT_ID, BET_ID, Instant.ofEpochMilli(1), a, 1000L));
+
+        assertThat(BetBlobCodec.deserialize(other.execute(other.prepare(
+                "SELECT bet FROM bets WHERE account_id = ? AND bet_id = ?").bind(ACCOUNT_ID, BET_ID)).one()
+                .getByteBuffer("bet"))).contains(a);
+        assertThat(other.execute(other.prepare("SELECT bet FROM bets_by_id WHERE bet_id = ?").bind(BET_ID)).all())
+                .hasSize(1);
+        assertNoRows();
+
+        otherRepository.delete(ACCOUNT_ID, BET_ID, OptionalLong.of(2000L));
+
+        assertThat(other.execute(other.prepare("SELECT bet FROM bets_by_id WHERE bet_id = ?").bind(BET_ID)).all())
+                .isEmpty();
+    }
+
     private void assertNoRows() {
         assertThat(rows("SELECT * FROM bet_store.bets WHERE account_id = ? AND bet_id = ?", ACCOUNT_ID, BET_ID)).isEmpty();
         assertThat(rows("SELECT * FROM bet_store.bets_by_id WHERE bet_id = ?", BET_ID)).isEmpty();
@@ -108,6 +163,10 @@ class BetWriteRepositoryIT {
 
     private List<Row> rows(String cql, Object... values) {
         return session.execute(session.prepare(cql).bind(values)).all();
+    }
+
+    private static Bet largeBet(String receiptId, int padding) {
+        return Bet.newBuilder().setBetReceiptId(receiptId + "x".repeat(padding)).setCurrency("GBP").build();
     }
 
     private static Bet bet(String receiptId) {

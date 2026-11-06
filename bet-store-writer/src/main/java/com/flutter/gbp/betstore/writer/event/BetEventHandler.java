@@ -11,6 +11,7 @@ import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.OptionalLong;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,7 +30,8 @@ import org.slf4j.LoggerFactory;
  * </ol>
  *
  * <p>Invalid events and conversion errors are logged, counted and skipped. Cassandra failures ({@code DriverException})
- * propagate so the caller does not commit the offset.
+ * propagate so the caller does not commit the offset. An upsert whose batch was too large and was written as two
+ * separate inserts ({@link BetWriteRepository.WriteMode#UNBATCHED}) is counted in {@value #BATCH_FALLBACK_METRIC}.
  */
 public class BetEventHandler {
 
@@ -40,6 +42,8 @@ public class BetEventHandler {
     /** Timer of the Cassandra writes, tagged with {@code operation} (upsert, delete) and {@code outcome} (success, failure). */
     public static final String WRITE_METRIC = "betstore.writer.cassandra.write";
     static final String LATENCY_METRIC = "betstore.writer.source.creation.latency";
+    /** Upserts written without the logged batch because it was too large; tagged with {@code source}. */
+    public static final String BATCH_FALLBACK_METRIC = "betstore.writer.cassandra.batch.fallbacks";
 
     /**
      * Result of handling one event.
@@ -117,7 +121,10 @@ public class BetEventHandler {
         if (event.settled()) {
             LOGGER.debug("Deleting the bet, source: {}, betId: {}, accountId: {}, writeTimestampMicros: {}",
                     event.source(), event.betId(), accountId, writeTimestampMicros);
-            timedWrite("delete", () -> repository.delete(accountId, event.betId(), writeTimestampMicros));
+            timedWrite("delete", () -> {
+                repository.delete(accountId, event.betId(), writeTimestampMicros);
+                return null;
+            });
             return Outcome.DELETED;
         }
 
@@ -141,7 +148,10 @@ public class BetEventHandler {
         LOGGER.debug("Persisting the bet, source: {}, betId: {}, accountId: {}", event.source(), event.betId(), accountId);
         BetRecord record = new BetRecord(accountId, event.betId(), Instant.ofEpochMilli(creationTimeMillis.getAsLong()),
                 bet, writeTimestampMicros.getAsLong());
-        timedWrite("upsert", () -> repository.upsert(record));
+        BetWriteRepository.WriteMode mode = timedWrite("upsert", () -> repository.upsert(record));
+        if (mode == BetWriteRepository.WriteMode.UNBATCHED) {
+            Counter.builder(BATCH_FALLBACK_METRIC).tag("source", event.source()).register(meterRegistry).increment();
+        }
         return Outcome.UPSERTED;
     }
 
@@ -149,12 +159,13 @@ public class BetEventHandler {
      * Runs a Cassandra write and records its duration in {@value #WRITE_METRIC}, tagged with the {@code operation} and
      * whether it succeeded. Failures are rethrown unchanged.
      */
-    private void timedWrite(String operation, Runnable write) {
+    private <T> T timedWrite(String operation, Supplier<T> write) {
         Timer.Sample sample = Timer.start(meterRegistry);
         String outcome = "failure";
         try {
-            write.run();
+            T result = write.get();
             outcome = "success";
+            return result;
         } finally {
             sample.stop(Timer.builder(WRITE_METRIC)
                     .tag("operation", operation)

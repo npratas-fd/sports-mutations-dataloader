@@ -6,7 +6,7 @@ FCQ do not need to read bet data from their own Cassandra tables.
 | Module | What it is |
 | --- | --- |
 | `bet-store-writer` | Spring Boot app. Consumes the FBP (`sb_bet_processor_topic`) and ABP (`retail_bet_processor_topic`) bet topics, converts events to the FCQ `Bet` proto and writes/deletes them in Cassandra. |
-| `bet-store-reader` | Spring Boot app. `GET /v1/accounts/{accountId}/bets[?betIds=a,b]` and `GET /v1/bets?betIds=a,b` (protobuf `BetList`, or proto JSON). |
+| `bet-store-reader` | Spring Boot app. `GET /v1/accounts/{accountId}/bets[?betIds=a,b]` (at most 70 bets, lowest bet ids first, like FCQ) and `GET /v1/bets?betIds=a,b` (at most 70 ids) (protobuf `BetList`, or proto JSON). |
 | `bet-store-client` | Java 11 HTTP client of the reader, for FCQ (a Cougar / Java 11 service). |
 | `bet-store-cassandra` | Read and write repositories, `cql/bet_store.cql` schema, shared Testcontainers support. |
 | `bet-store-model` | `BetList` proto and the blob codec. |
@@ -59,8 +59,9 @@ environment variables). Defaults are in each module's `application.yml`.
 
 | Property | Default | Meaning |
 | --- | --- | --- |
-| `spring.cassandra.contact-points`, `local-datacenter`, `keyspace-name`, credentials | keyspace `bet_store` | Cassandra connection. |
-| `spring.kafka.bootstrap-servers` (+ security) | - | Kafka connection. |
+| `spring.cassandra.contact-points`, `local-datacenter`, `keyspace-name`, credentials | keyspace `bet_store` | Cassandra connection. The CQL uses unqualified table names, so `keyspace-name` selects the keyspace. |
+| `spring.cassandra.request.consistency` | `local_quorum` | Consistency of every write and delete, as in FCQ. |
+| `spring.kafka.bootstrap-servers` (+ security) | - | Kafka connection. See "Open before production" for SSL. |
 | `spring.kafka.consumer.group-id` | `bet-store-writer` | Consumer group. Offsets are committed record by record, after the Cassandra write. |
 | `bet-store.consumers.fbp.topic` / `.enabled` | `sb_bet_processor_topic` / `true` | FBP (online) topic and on/off switch. |
 | `bet-store.consumers.abp.topic` / `.enabled` | `retail_bet_processor_topic` / `true` | ABP (retail) topic and on/off switch. |
@@ -81,9 +82,19 @@ bets differ from what FCQ would have produced itself. Whenever a toggle changes 
 
 | Property | Default | Meaning |
 | --- | --- | --- |
-| `spring.cassandra.*` | keyspace `bet_store` | Cassandra connection. |
-| `bet-store.reader.bet-limit` | `70` | Maximum bets returned for an account. |
-| `bet-store.reader.max-bet-ids` | `70` | Maximum distinct ids in `?betIds=`; more returns `400`. |
+| `spring.cassandra.*` | keyspace `bet_store` | Cassandra connection. The CQL uses unqualified table names, so `keyspace-name` selects the keyspace. |
+| `spring.cassandra.request.consistency` | `local_quorum` | Consistency of every read, as in FCQ. With the driver default (`LOCAL_ONE`) a read could hit a replica that missed a settle delete and return a settled bet. |
+| `bet-store.reader.bet-limit` | `70` | Maximum bets returned by an account query, with or without `betIds`: the lowest bet ids, ascending (FCQ's `ORDER BY bet_id ASC LIMIT 70`). |
+| `bet-store.reader.max-bet-ids` | `70` | Maximum distinct ids in `GET /v1/bets?betIds=`; more returns `400`. |
+| `bet-store.reader.max-account-bet-ids` | `1000` | Maximum distinct ids in `GET /v1/accounts/{accountId}/bets?betIds=`; more returns `400`. Abuse protection only: FCQ accepts any number of ids for an account and caps the result, and so does the reader (`bet-limit`). |
+| `server.max-http-request-header-size` | `64KB` | Tomcat's limit on request line + headers. Raised from 8 KB so that 1000 URL-encoded bet ids fit in the query string. |
+
+All three values must be positive (checked at startup). Ids per endpoint, in short:
+
+| Endpoint | Ids accepted | Bets returned |
+| --- | --- | --- |
+| `GET /v1/accounts/{accountId}/bets` | any number up to `max-account-bet-ids` (1000), else `400` | at most `bet-limit` (70), ascending bet id |
+| `GET /v1/bets` | 1 to `max-bet-ids` (70), else `400` | all requested bets that exist, ascending bet id |
 
 The reader answers `503` when Cassandra is unavailable.
 
@@ -92,11 +103,22 @@ The reader answers `503` when Cassandra is unavailable.
 - **No backfill.** The service starts empty. A new consumer group starts at the `earliest` offset, which recovers whatever is
   still within the topics' retention. Open bets that predate that and receive no new event (for example long-running ante-post
   bets) are missing until their next event.
-- **Cassandra failures stall the writer on purpose.** A failed write is retried forever (exponential backoff, 0.5 s up to 30 s)
-  and its offset is not committed, so no event is lost and per-partition order is kept. The consequence is that a
-  **permanent** driver error (for example `InvalidQueryException` or `UnauthorizedException`) is retried forever and stops
-  consumption of that partition. Watch `betstore.writer.cassandra.retries` and the consumer lag. Records that cannot be
-  deserialized or converted are skipped and counted (`betstore.writer.records.skipped`), not retried.
+- **Cassandra availability failures stall the writer on purpose.** A write that fails with a driver error (timeouts,
+  unavailable replicas, no node reachable, ...) is retried forever (exponential backoff, 0.5 s up to 30 s) and its offset is
+  not committed, so no event is lost and per-partition order is kept. Watch `betstore.writer.cassandra.retries` and the
+  consumer lag.
+- **Permanent Cassandra failures are skipped, not retried.** A `QueryValidationException` (`InvalidQueryException`,
+  `SyntaxError`, `UnauthorizedException`, `InvalidConfigurationInQueryException`, `AlreadyExistsException`) would fail the same
+  way on every attempt and stop the partition for good, so the record is logged at `ERROR`, counted in
+  `betstore.writer.cassandra.permanent.failures` and its offset committed: **that event is lost** for bet-store and the bet
+  stays as it was until its next event. Any increase of this counter needs investigation (schema, grants, keyspace).
+- **Oversized batches fall back to separate writes.** An upsert writes the bet blob to both tables in one logged batch, so the
+  batch is about twice the blob. Above Cassandra's `batch_size_fail_threshold` (50 KiB by default, i.e. a blob of roughly
+  25 KB) Cassandra rejects it ("Batch too large"); the writer then runs the two inserts separately with the same write
+  timestamp (still idempotent and ordered, but not atomic across the two tables: if the second insert fails the whole upsert
+  is retried). Logged at `WARN` with the bet id and counted in `betstore.writer.cassandra.batch.fallbacks`. Batches above
+  `batch_size_warn_threshold` (5 KiB by default) are accepted but logged by Cassandra.
+- Records that cannot be deserialized or converted are skipped and counted (`betstore.writer.records.skipped`), not retried.
 - **Health:** `/actuator/health` shows `cassandra` (both apps) and `kafka` (writer: enabled listeners running and the
   broker answers). `/actuator/prometheus` exposes the metrics.
 
@@ -108,11 +130,36 @@ The reader answers `503` when Cassandra is unavailable.
 | `betstore.writer.events` | writer | `source` (`fbp`/`abp`), `sourceTag` (lower-case bet source tag, `unspecified` if unknown or absent), `outcome` | Events handled: `UPSERTED`, `DELETED`, `SKIPPED_VIRTUAL`, `SKIPPED_OBP`, `SKIPPED_INVALID_ACCOUNT`, `SKIPPED_NO_TIMESTAMP`, `SKIPPED_CONVERSION_ERROR`, `SKIPPED_NO_BET`. |
 | `betstore.writer.source.creation.latency` | writer | `source`, `sourceTag` | `now - CREATION_TIME`; same measurement as FCQ's `source.creation.time.latency.millis`. |
 | `betstore.writer.cassandra.write` | writer | `operation` (`upsert`/`delete`), `outcome` (`success`/`failure`) | Timer of each Cassandra write, published as a histogram (p50/p95/p99 computed by the backend). |
-| `betstore.writer.cassandra.retries` | writer | `topic` | Failed Cassandra writes that are being retried. |
+| `betstore.writer.cassandra.retries` | writer | `topic` | Failed Cassandra writes that are being retried (availability failures). |
+| `betstore.writer.cassandra.permanent.failures` | writer | `topic` | Records skipped after a permanent Cassandra failure (`QueryValidationException`); the event is lost. |
+| `betstore.writer.cassandra.batch.fallbacks` | writer | `source` | Upserts whose batch was too large and were written as two separate inserts. |
 | `betstore.writer.records.skipped` | writer | `topic`, `exception` | Records skipped after a non-Cassandra failure. |
 | `betstore.reader.bet.ids.requested` | reader | `endpoint` (`account`/`bets`) | Distribution summary: distinct ids per request. Not recorded for an account query without `betIds`. |
 | `betstore.reader.bets.returned` | reader | `endpoint` (`account`/`bets`) | Distribution summary: bets returned per request. |
 | `http.server.requests` | reader | `uri`, `method`, `status`, `outcome`, `exception` | Latency histogram per endpoint (`uri`; p50/p95/p99 computed by the backend) and errors by type. |
+
+## Open before production
+
+These points are known and accepted for v1 but must be closed before FCQ is cut over to bet-store.
+
+1. **Write timestamp semantics must be confirmed with the FBP/ABP owners.** The write timestamp (`CREATION_TIME` by default)
+   decides which of two writes of the same bet wins, but `CREATION_TIME` is not confirmed to be monotonic per bet. Two events
+   of the same bet in the same millisecond tie, and on a tie Cassandra keeps the larger blob, not the later event. Consider
+   `generationVersion` from the event context as ordering key or tie-breaker.
+2. **Service-to-service authentication of the reader is not implemented.** `GET /v1/bets` returns the bets of any account to
+   any caller, and the actuator endpoints are on the same port. Must follow the GBP service-to-service auth pattern before
+   deployment.
+3. **Writer throughput is sequential per partition.** Records of a partition are written one at a time (FCQ shards by key
+   within a partition). Measure catch-up throughput (new consumer group from `earliest`) and settlement-burst throughput
+   before cutover, and size `spring.kafka.listener.concurrency` / partitions accordingly.
+4. **Datadog monitors are not shipped.** Add monitors on `betstore.writer.cassandra.retries`,
+   `betstore.writer.cassandra.permanent.failures` and the consumer lag (`kafka.consumer.fetch.manager.records.lag`).
+5. **Blob sizes are not measured.** Measure real bet blob sizes and agree `batch_size_warn_threshold` /
+   `batch_size_fail_threshold` with infra (see "Oversized batches fall back to separate writes").
+6. **Kafka SSL is not applied by the hand-built consumer factories.** The writer builds its consumer factories from
+   `KafkaProperties.buildConsumerProperties()`, which does not apply SSL bundles or Boot's connection details. Configure SSL and
+   SASL with plain properties: `spring.kafka.ssl.*` (keystore / truststore locations and passwords) and
+   `spring.kafka.properties.*` (for example `security.protocol`, `sasl.*`).
 
 ## Service catalog
 

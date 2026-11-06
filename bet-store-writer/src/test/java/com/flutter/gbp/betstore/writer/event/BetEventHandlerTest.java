@@ -7,6 +7,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 import com.datastax.oss.driver.api.core.DriverTimeoutException;
 import com.flutter.gbp.betstore.cassandra.BetRecord;
@@ -218,6 +219,29 @@ class BetEventHandlerTest {
 
         assertThat(writeTimer("upsert", "failure").count()).isEqualTo(1);
         assertThat(meterRegistry.find("betstore.writer.cassandra.write").tag("outcome", "success").timer()).isNull();
+    }
+
+    @Test
+    void unbatchedUpsertIsCountedAsBatchFallback() {
+        when(repository.upsert(any(BetRecord.class)))
+                .thenReturn(BetWriteRepository.WriteMode.UNBATCHED, BetWriteRepository.WriteMode.LOGGED_BATCH);
+        BetEventHandler handler = handler(true);
+
+        assertThat(handler.handle(fbpEvent().build())).isEqualTo(Outcome.UPSERTED);
+        assertThat(handler.handle(fbpEvent().build())).isEqualTo(Outcome.UPSERTED);
+
+        assertThat(meterRegistry.get("betstore.writer.cassandra.batch.fallbacks").tag("source", "fbp").counter().count())
+                .isEqualTo(1.0);
+        assertThat(writeTimer("upsert", "success").count()).isEqualTo(2);
+    }
+
+    @Test
+    void loggedBatchUpsertIsNotCountedAsFallback() {
+        when(repository.upsert(any(BetRecord.class))).thenReturn(BetWriteRepository.WriteMode.LOGGED_BATCH);
+
+        handler(true).handle(fbpEvent().build());
+
+        assertThat(meterRegistry.find("betstore.writer.cassandra.batch.fallbacks").counter()).isNull();
     }
 
     private Timer writeTimer(String operation, String outcome) {

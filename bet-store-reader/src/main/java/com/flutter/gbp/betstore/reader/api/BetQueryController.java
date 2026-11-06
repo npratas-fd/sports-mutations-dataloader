@@ -19,6 +19,11 @@ import org.springframework.web.server.ResponseStatusException;
 /**
  * Read API: open bets by account (optionally filtered by bet ids) or by bet ids alone. Bets that do not exist are
  * simply absent from the response; there is no 404.
+ *
+ * <p>Id limits differ per endpoint. The account endpoint behaves like FCQ, which accepts any number of ids and caps the
+ * result: it returns at most {@code bet-limit} (70) bets, those with the lowest bet ids, and only rejects more than
+ * {@code max-account-bet-ids} (1000) ids, as abuse protection. {@code /v1/bets} rejects more than {@code max-bet-ids}
+ * (70) ids.
  */
 @RestController
 @RequestMapping(path = "/v1", produces = {"application/x-protobuf", "application/json"})
@@ -31,16 +36,20 @@ public class BetQueryController {
 
     private final BetReadRepository repository;
     private final int maxBetIds;
+    private final int maxAccountBetIds;
     private final MeterRegistry meterRegistry;
 
     public BetQueryController(BetReadRepository repository, ReaderProperties properties, MeterRegistry meterRegistry) {
         this.repository = repository;
         this.maxBetIds = properties.maxBetIds();
+        this.maxAccountBetIds = properties.maxAccountBetIds();
         this.meterRegistry = meterRegistry;
     }
 
     /**
-     * Bets of an account; a missing or blank {@code betIds} means no filter.
+     * Bets of an account; a missing or blank {@code betIds} means no filter. At most {@code bet-limit} bets are
+     * returned (lowest bet ids first), however many ids are asked for; more than {@code max-account-bet-ids} distinct
+     * ids is a 400.
      */
     @GetMapping("/accounts/{accountId}/bets")
     public BetList accountBets(@PathVariable("accountId") long accountId,
@@ -51,14 +60,14 @@ public class BetQueryController {
             bets = repository.findByAccount(accountId);
         } else {
             summary(REQUESTED_METRIC, "account").record(ids.size());
-            bets = repository.findByAccountAndBetIds(accountId, checkMax(ids));
+            bets = repository.findByAccountAndBetIds(accountId, checkMax(ids, maxAccountBetIds));
         }
         summary(RETURNED_METRIC, "account").record(bets.size());
         return BetList.newBuilder().addAllBets(bets).build();
     }
 
     /**
-     * Bets by id, from any account; at least one id is required.
+     * Bets by id, from any account; at least one and at most {@code max-bet-ids} distinct ids are required.
      */
     @GetMapping("/bets")
     public BetList bets(@RequestParam(name = "betIds", required = false) String betIds) {
@@ -67,7 +76,7 @@ public class BetQueryController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "betIds must contain at least one bet id");
         }
         summary(REQUESTED_METRIC, "bets").record(ids.size());
-        List<Bet> bets = repository.findByBetIds(checkMax(ids));
+        List<Bet> bets = repository.findByBetIds(checkMax(ids, maxBetIds));
         summary(RETURNED_METRIC, "bets").record(bets.size());
         return BetList.newBuilder().addAllBets(bets).build();
     }
@@ -76,10 +85,10 @@ public class BetQueryController {
         return DistributionSummary.builder(name).tag("endpoint", endpoint).register(meterRegistry);
     }
 
-    private Set<String> checkMax(Set<String> ids) {
-        if (ids.size() > maxBetIds) {
+    private static Set<String> checkMax(Set<String> ids, int max) {
+        if (ids.size() > max) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "betIds must contain at most " + maxBetIds + " distinct ids");
+                    "betIds must contain at most " + max + " distinct ids");
         }
         return ids;
     }

@@ -44,7 +44,7 @@ public class BetStoreClient {
                 .build();
     }
 
-    /** All open bets of an account. */
+    /** Open bets of an account: at most 70 ({@code bet-store.reader.bet-limit}), lowest bet ids first. */
     public CompletableFuture<List<Bet>> getBets(long accountId) {
         return fetch(base + accountPath(accountId));
     }
@@ -52,10 +52,12 @@ public class BetStoreClient {
     /**
      * The given bets of an account; bets that do not exist or belong to another account are omitted.
      *
-     * <p>The reader accepts at most 70 distinct ids per request; more yields a {@link BetStoreClientException} with
-     * {@code statusCode() == 400}. An empty set returns an empty list without a request. A null, blank or
-     * comma-containing id (commas separate ids on the wire) completes the future exceptionally with an
-     * {@link IllegalArgumentException}.
+     * <p>Like FCQ's own query ({@code ORDER BY bet_id ASC LIMIT 70}), any number of ids may be asked for and at most
+     * 70 bets ({@code bet-store.reader.bet-limit}) are returned: those with the lowest bet ids, in ascending bet id
+     * order. Only above 1000 distinct ids ({@code bet-store.reader.max-account-bet-ids}, abuse protection) does the
+     * reader answer 400, i.e. a {@link BetStoreClientException} with {@code statusCode() == 400}. An empty set returns
+     * an empty list without a request. A null, blank or comma-containing id (commas separate ids on the wire) completes
+     * the future exceptionally with an {@link IllegalArgumentException}.
      */
     public CompletableFuture<List<Bet>> getBets(long accountId, Set<String> betIds) {
         checkArgument(betIds != null, "betIds must not be null");
@@ -70,9 +72,10 @@ public class BetStoreClient {
     }
 
     /**
-     * The given bets regardless of account; bets that do not exist are omitted.
+     * The given bets regardless of account, in ascending bet id order; bets that do not exist are omitted.
      *
-     * <p>The reader accepts at most 70 distinct ids per request; more yields a {@link BetStoreClientException} with
+     * <p>Unlike {@link #getBets(long, Set)}, this endpoint accepts at most 70 distinct ids per request
+     * ({@code bet-store.reader.max-bet-ids}); more yields a {@link BetStoreClientException} with
      * {@code statusCode() == 400}. An empty set returns an empty list without a request. A null, blank or
      * comma-containing id (commas separate ids on the wire) completes the future exceptionally with an
      * {@link IllegalArgumentException}.

@@ -100,6 +100,22 @@ class BetReadRepositoryIT {
     }
 
     @Test
+    void readsComeFromTheSessionKeyspace() {
+        write(ACCOUNT_1, "a");
+        CqlSession other = CassandraTestSupport.sessionForKeyspace("bet_store_other");
+        other.execute("TRUNCATE bets");
+        other.execute("TRUNCATE bets_by_id");
+        Bet otherBet = Bet.newBuilder().setBetReceiptId("o").setCurrency("EUR").build();
+        new BetWriteRepository(other).upsert(new BetRecord(ACCOUNT_1, "o", Instant.ofEpochMilli(1), otherBet, 1000L));
+
+        BetReadRepository otherReader = new BetReadRepository(other, 100);
+
+        assertThat(receipts(otherReader.findByAccount(ACCOUNT_1))).containsExactly("o");
+        assertThat(receipts(otherReader.findByAccountAndBetIds(ACCOUNT_1, Set.of("a", "o")))).containsExactly("o");
+        assertThat(receipts(otherReader.findByBetIds(Set.of("a", "o")))).containsExactly("o");
+    }
+
+    @Test
     void emptyAccountReturnsEmptyList() {
         assertThat(reader.findByAccount(999L)).isEmpty();
     }

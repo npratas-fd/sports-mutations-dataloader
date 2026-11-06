@@ -4,6 +4,9 @@ spring:
   cassandra:
     # The keyspace and tables are provisioned by infra (cql/bet_store.cql in tests)
     keyspace-name: bet_store
+    request:
+      # As FCQ (and so that the reader's LOCAL_QUORUM reads see every acknowledged write and delete)
+      consistency: local_quorum
   kafka:
     consumer:
       group-id: bet-store-writer

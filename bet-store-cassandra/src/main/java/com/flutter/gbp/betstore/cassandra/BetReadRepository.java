@@ -31,8 +31,9 @@ public class BetReadRepository {
 
     private static final Logger LOG = LoggerFactory.getLogger(BetReadRepository.class);
 
-    private static final String BETS = BetStoreTables.KEYSPACE + "." + BetStoreTables.BETS;
-    private static final String BETS_BY_ID = BetStoreTables.KEYSPACE + "." + BetStoreTables.BETS_BY_ID;
+    // Unqualified: the tables are resolved in the session keyspace (spring.cassandra.keyspace-name)
+    private static final String BETS = BetStoreTables.BETS;
+    private static final String BETS_BY_ID = BetStoreTables.BETS_BY_ID;
 
     private final CqlSession session;
     private final PreparedStatement selectByAccount;
@@ -42,7 +43,7 @@ public class BetReadRepository {
     /**
      * Creates the repository and prepares its statements.
      *
-     * @param session  session whose keyspace schema is already in place
+     * @param session  session bound to the bet-store keyspace (tables are not keyspace-qualified), schema in place
      * @param betLimit maximum number of bets returned by an account query; must be positive
      */
     public BetReadRepository(CqlSession session, int betLimit) {

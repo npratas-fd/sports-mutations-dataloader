@@ -7,6 +7,8 @@ import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 
+import com.datastax.oss.driver.api.core.CqlSession;
+import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
 import com.datastax.oss.driver.api.core.cql.Row;
 import com.flutter.gbp.betstore.cassandra.BetWriteRepository;
 import com.flutter.gbp.betstore.cassandra.CassandraTestSupport;
@@ -101,6 +103,9 @@ class BetStoreWriterIT {
     @Autowired
     private HealthEndpoint healthEndpoint;
 
+    @Autowired
+    private CqlSession session;
+
     @Value("${spring.kafka.consumer.group-id}")
     private String groupId;
 
@@ -120,6 +125,13 @@ class BetStoreWriterIT {
     @BeforeEach
     void cleanTables() {
         CassandraTestSupport.truncateAll();
+    }
+
+    /** Writes and deletes at LOCAL_QUORUM, like FCQ, so the reader's LOCAL_QUORUM reads see them. */
+    @Test
+    void cassandraWritesUseLocalQuorum() {
+        assertThat(session.getContext().getConfig().getDefaultProfile()
+                .getString(DefaultDriverOption.REQUEST_CONSISTENCY)).isEqualTo("LOCAL_QUORUM");
     }
 
     @Test

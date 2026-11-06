@@ -7,12 +7,17 @@ import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.stream.Collectors;
 import org.testcontainers.cassandra.CassandraContainer;
 
 /**
  * Shared Cassandra test infrastructure: one container per JVM, with the {@code cql/bet_store.cql} schema applied.
  * Published in the module's test-jar so other modules can reuse it.
+ *
+ * <p>Sessions are bound to their keyspace (as Boot's session is, via {@code spring.cassandra.keyspace-name}), because
+ * the repositories use unqualified table names.
  */
 public final class CassandraTestSupport {
 
@@ -21,24 +26,43 @@ public final class CassandraTestSupport {
 
     private static CassandraContainer container;
     private static CqlSession session;
+    private static final Map<String, CqlSession> OTHER_KEYSPACE_SESSIONS = new HashMap<>();
 
     private CassandraTestSupport() {
     }
 
-    /** Returns a session on the shared container, starting it and applying the schema on first use. */
+    /**
+     * Returns a session bound to the {@value BetStoreTables#KEYSPACE} keyspace on the shared container, starting it and
+     * applying the schema on first use.
+     */
     public static synchronized CqlSession session() {
         if (session == null) {
             container = new CassandraContainer(IMAGE);
             container.start();
             Runtime.getRuntime().addShutdownHook(new Thread(CassandraTestSupport::stop));
-            CqlSession created = CqlSession.builder()
-                    .addContactPoint(container.getContactPoint())
-                    .withLocalDatacenter(container.getLocalDatacenter())
-                    .build();
-            applySchema(created);
-            session = created;
+            try (CqlSession admin = newSession(null)) {
+                applySchema(admin, BetStoreTables.KEYSPACE);
+            }
+            session = newSession(BetStoreTables.KEYSPACE);
         }
         return session;
+    }
+
+    /**
+     * Returns a session bound to another keyspace with the same schema, creating it on first use. Lets tests show that
+     * the repositories follow the session keyspace ({@code spring.cassandra.keyspace-name}).
+     */
+    public static synchronized CqlSession sessionForKeyspace(String keyspace) {
+        if (BetStoreTables.KEYSPACE.equals(keyspace)) {
+            return session();
+        }
+        session();
+        return OTHER_KEYSPACE_SESSIONS.computeIfAbsent(keyspace, name -> {
+            try (CqlSession admin = newSession(null)) {
+                applySchema(admin, name);
+            }
+            return newSession(name);
+        });
     }
 
     /** Removes all rows from both bet tables. */
@@ -66,7 +90,19 @@ public final class CassandraTestSupport {
         return container.getContainerId();
     }
 
+    private static CqlSession newSession(String keyspace) {
+        var builder = CqlSession.builder()
+                .addContactPoint(container.getContactPoint())
+                .withLocalDatacenter(container.getLocalDatacenter());
+        if (keyspace != null) {
+            builder.withKeyspace(keyspace);
+        }
+        return builder.build();
+    }
+
     private static synchronized void stop() {
+        OTHER_KEYSPACE_SESSIONS.values().forEach(CqlSession::close);
+        OTHER_KEYSPACE_SESSIONS.clear();
         if (session != null) {
             session.close();
             session = null;
@@ -77,7 +113,8 @@ public final class CassandraTestSupport {
         }
     }
 
-    private static void applySchema(CqlSession s) {
+    /** Applies the schema script, with its keyspace name replaced by {@code keyspace}. */
+    private static void applySchema(CqlSession s, String keyspace) {
         String script;
         try (InputStream in = CassandraTestSupport.class.getResourceAsStream(SCHEMA_RESOURCE)) {
             if (in == null) {
@@ -87,7 +124,9 @@ public final class CassandraTestSupport {
         } catch (IOException e) {
             throw new IllegalStateException("Cannot read " + SCHEMA_RESOURCE, e);
         }
-        Arrays.stream(stripComments(script).split(";"))
+        Arrays.stream(stripComments(script).replace(BetStoreTables.KEYSPACE + ".", keyspace + ".")
+                        .replace("KEYSPACE IF NOT EXISTS " + BetStoreTables.KEYSPACE + " ", "KEYSPACE IF NOT EXISTS " + keyspace + " ")
+                        .split(";"))
                 .map(String::strip)
                 .filter(statement -> !statement.isEmpty())
                 .forEach(s::execute);

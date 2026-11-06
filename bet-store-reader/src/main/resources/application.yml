@@ -4,9 +4,17 @@ spring:
   cassandra:
     # The keyspace and tables are provisioned by infra (cql/bet_store.cql in tests)
     keyspace-name: bet_store
+    request:
+      # As FCQ: LOCAL_ONE (driver default) could serve a settled bet from a replica that missed the delete
+      consistency: local_quorum
   threads:
     virtual:
       enabled: true
+
+server:
+  # GET /v1/accounts/{accountId}/bets?betIds= accepts up to max-account-bet-ids (1000) ids, ~25 KB once URL-encoded;
+  # Tomcat's default (8 KB, request line included) would reject such requests
+  max-http-request-header-size: 64KB
 
 management:
   endpoints:
@@ -25,7 +33,10 @@ management:
 
 bet-store:
   reader:
-    # Maximum number of bets returned by an account query
+    # Maximum number of bets returned by an account query (lowest bet ids first, as FCQ's ORDER BY bet_id LIMIT 70)
     bet-limit: 70
-    # Maximum number of distinct ids accepted in ?betIds=
+    # Maximum number of distinct ids accepted by GET /v1/bets?betIds= (more is a 400)
     max-bet-ids: 70
+    # Maximum number of distinct ids accepted by GET /v1/accounts/{accountId}/bets?betIds= (more is a 400). Abuse
+    # protection only: FCQ accepts any number of ids for an account and caps the result with bet-limit
+    max-account-bet-ids: 1000
