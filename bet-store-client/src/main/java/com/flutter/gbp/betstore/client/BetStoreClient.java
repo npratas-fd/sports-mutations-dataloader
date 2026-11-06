@@ -49,26 +49,61 @@ public class BetStoreClient {
         return fetch(base + accountPath(accountId));
     }
 
-    /** The given bets of an account; bets that do not exist or belong to another account are omitted. */
+    /**
+     * The given bets of an account; bets that do not exist or belong to another account are omitted.
+     *
+     * <p>The reader accepts at most 70 distinct ids per request; more yields a {@link BetStoreClientException} with
+     * {@code statusCode() == 400}. An empty set returns an empty list without a request. A null, blank or
+     * comma-containing id (commas separate ids on the wire) completes the future exceptionally with an
+     * {@link IllegalArgumentException}.
+     */
     public CompletableFuture<List<Bet>> getBets(long accountId, Set<String> betIds) {
         checkArgument(betIds != null, "betIds must not be null");
         if (betIds.isEmpty()) {
             return CompletableFuture.completedFuture(List.of());
         }
+        String invalid = invalidBetId(betIds);
+        if (invalid != null) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException(invalid));
+        }
         return fetch(base + accountPath(accountId) + "?betIds=" + encode(betIds));
     }
 
-    /** The given bets regardless of account; bets that do not exist are omitted. */
+    /**
+     * The given bets regardless of account; bets that do not exist are omitted.
+     *
+     * <p>The reader accepts at most 70 distinct ids per request; more yields a {@link BetStoreClientException} with
+     * {@code statusCode() == 400}. An empty set returns an empty list without a request. A null, blank or
+     * comma-containing id (commas separate ids on the wire) completes the future exceptionally with an
+     * {@link IllegalArgumentException}.
+     */
     public CompletableFuture<List<Bet>> getBetsByIds(Set<String> betIds) {
         checkArgument(betIds != null, "betIds must not be null");
         if (betIds.isEmpty()) {
             return CompletableFuture.completedFuture(List.of());
+        }
+        String invalid = invalidBetId(betIds);
+        if (invalid != null) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException(invalid));
         }
         return fetch(base + "/v1/bets?betIds=" + encode(betIds));
     }
 
     private static String accountPath(long accountId) {
         return "/v1/accounts/" + accountId + "/bets";
+    }
+
+    /** Returns an error message for the first unusable id, or null when all ids are valid. */
+    private static String invalidBetId(Set<String> betIds) {
+        for (String id : betIds) {
+            if (id == null || id.trim().isEmpty()) {
+                return "betIds must not contain null or blank ids";
+            }
+            if (id.indexOf(',') >= 0) {
+                return "betIds must not contain ',' (it separates ids on the wire): " + id;
+            }
+        }
+        return null;
     }
 
     /** Each id is URL-encoded; ids are separated by a literal comma, as the reader expects. */

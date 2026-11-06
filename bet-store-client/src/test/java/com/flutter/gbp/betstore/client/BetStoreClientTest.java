@@ -14,8 +14,11 @@ import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
 import java.net.URI;
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import org.junit.jupiter.api.AfterEach;
@@ -65,12 +68,24 @@ class BetStoreClientTest {
         server.stubFor(get(urlPathEqualTo("/v1/accounts/42/bets"))
                 .willReturn(aResponse().withStatus(200).withBody(betList("a/b").toByteArray())));
 
-        List<Bet> bets = client.getBets(42L, Set.of("a/b", "c")).join();
+        List<Bet> bets = client.getBets(42L, new TreeSet<>(Set.of("a/b", "c d"))).join();
 
         assertThat(bets).containsExactly(bet("a/b"));
         String url = server.findAll(getRequestedFor(urlPathEqualTo("/v1/accounts/42/bets"))).get(0).getUrl();
-        assertThat(url).isIn("/v1/accounts/42/bets?betIds=a%2Fb,c", "/v1/accounts/42/bets?betIds=c,a%2Fb",
-                "/v1/accounts/42/bets?betIds=a%2Fb%2Cc", "/v1/accounts/42/bets?betIds=c%2Ca%2Fb");
+        assertThat(url).isEqualTo("/v1/accounts/42/bets?betIds=a%2Fb,c+d");
+    }
+
+    @Test
+    void invalidBetIdsFailTheFutureWithoutRequest() {
+        Set<String> withNull = new HashSet<>(Arrays.asList("a", null));
+        for (Set<String> ids : List.of(Set.of("a,b"), withNull, Set.of(" "))) {
+            for (CompletableFuture<List<Bet>> future : List.of(client.getBets(42L, ids), client.getBetsByIds(ids))) {
+                assertThatThrownBy(future::join)
+                        .isInstanceOf(CompletionException.class)
+                        .hasCauseInstanceOf(IllegalArgumentException.class);
+            }
+        }
+        assertThat(server.getAllServeEvents()).isEmpty();
     }
 
     @Test

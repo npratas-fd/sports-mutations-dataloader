@@ -1,17 +1,21 @@
 package com.flutter.gbp.betstore.reader;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.flutter.gbp.betstore.cassandra.BetRecord;
 import com.flutter.gbp.betstore.cassandra.BetWriteRepository;
 import com.flutter.gbp.betstore.cassandra.CassandraTestSupport;
 import com.flutter.gbp.betstore.client.BetStoreClient;
 import com.flutter.gbp.betstore.client.BetStoreClientConfig;
+import com.flutter.gbp.betstore.client.BetStoreClientException;
 import com.flutter.gbp.fcq.bet.Bet;
 import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -61,6 +65,20 @@ class BetStoreClientContractIT {
         assertThat(client.getBetsByIds(Set.of("R/CT/0003", "R/CT/0001", "missing")).join())
                 .containsExactlyInAnyOrder(first, other);
         assertThat(client.getBets(1L).join()).isEmpty();
+    }
+
+    @Test
+    void tooManyBetIdsIsRejectedWith400() {
+        BetStoreClient client = new BetStoreClient(new BetStoreClientConfig(
+                URI.create("http://localhost:" + port), Duration.ofSeconds(5), Duration.ofSeconds(10)));
+        Set<String> ids = IntStream.range(0, 71).mapToObj(i -> "R/CAP/" + i).collect(Collectors.toSet());
+
+        assertThatThrownBy(() -> client.getBetsByIds(ids).join())
+                .hasCauseInstanceOf(BetStoreClientException.class)
+                .satisfies(e -> assertThat(((BetStoreClientException) e.getCause()).statusCode()).isEqualTo(400));
+        assertThatThrownBy(() -> client.getBets(ACCOUNT_ID, ids).join())
+                .hasCauseInstanceOf(BetStoreClientException.class)
+                .satisfies(e -> assertThat(((BetStoreClientException) e.getCause()).statusCode()).isEqualTo(400));
     }
 
     private static Bet bet(String receiptId) {
