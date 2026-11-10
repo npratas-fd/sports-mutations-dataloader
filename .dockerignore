@@ -1,0 +1,4 @@
+# Only the built jars are needed in the image build contexts
+**
+!sports-mutations-dataloader-writer/target/sports-mutations-dataloader-writer-*.jar
+!sports-mutations-dataloader-reader/target/sports-mutations-dataloader-reader-*.jar

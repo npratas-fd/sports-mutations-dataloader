@@ -1,0 +1,209 @@
+package com.flutter.gbp.sportsmutationsdataloader.writer.kafka;
+
+import com.datastax.oss.driver.api.core.DriverException;
+import com.datastax.oss.driver.api.core.servererrors.QueryValidationException;
+import com.flutter.gbp.sportsmutationsdataloader.writer.event.AbpEventAdapter;
+import com.flutter.gbp.sportsmutationsdataloader.writer.event.BetEventHandler;
+import com.flutter.gbp.sportsmutationsdataloader.writer.event.FbpEventAdapter;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import java.util.function.Supplier;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.common.serialization.Deserializer;
+import org.apache.kafka.common.serialization.StringDeserializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.kafka.autoconfigure.ConcurrentKafkaListenerContainerFactoryConfigurer;
+import org.springframework.boot.kafka.autoconfigure.DefaultKafkaConsumerFactoryCustomizer;
+import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
+import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.core.KafkaAdmin;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
+import org.springframework.util.backoff.BackOff;
+import org.springframework.util.backoff.ExponentialBackOff;
+import org.springframework.util.backoff.FixedBackOff;
+
+/**
+ * Kafka consumer wiring of the writer.
+ *
+ * <p>One listener container factory per topic, because FBP and ABP use different value deserializers. Both start from
+ * Boot's {@code spring.kafka.consumer.*} properties and are configured by Boot's
+ * {@link ConcurrentKafkaListenerContainerFactoryConfigurer}, which applies {@code spring.kafka.listener.*}
+ * ({@code ack-mode=record}, {@code concurrency}) and the {@link DefaultErrorHandler} bean below.
+ *
+ * <p>Error handling:
+ * <ul>
+ *     <li>a Cassandra availability failure ({@link DriverException} anywhere in the cause chain, other than a
+ *     {@link QueryValidationException}: timeouts, unavailable replicas, no node reachable, ...) is retried forever
+ *     with exponential backoff ({@value #CASSANDRA_INITIAL_INTERVAL_MS} ms up to {@value #CASSANDRA_MAX_INTERVAL_MS}
+ *     ms). The record is re-sought and its offset is not committed, so nothing is lost and the partition keeps its
+ *     order; the container is never stopped. Each failed attempt is logged and counted
+ *     ({@value #CASSANDRA_RETRIES_METRIC}, tag {@code topic});</li>
+ *     <li>a permanent Cassandra failure ({@link QueryValidationException} anywhere in the cause chain: invalid query,
+ *     syntax error, unauthorized, invalid configuration, already exists) would fail the same way on every retry and
+ *     stall the partition, so it is not retried: the record is logged at ERROR, counted
+ *     ({@value #CASSANDRA_PERMANENT_FAILURES_METRIC}, tag {@code topic}) and skipped;</li>
+ *     <li>any other failure, including a record that cannot be deserialized ({@link ErrorHandlingDeserializer}), is
+ *     logged, counted ({@value #SKIPPED_RECORDS_METRIC}) and skipped: the offset is committed and the partition moves
+ *     on.</li>
+ * </ul>
+ *
+ * <p>The consumer factories are built here rather than by Boot, so Boot's {@link DefaultKafkaConsumerFactoryCustomizer}
+ * beans are applied explicitly: that is what publishes the Kafka client metrics, including the lag per partition.
+ */
+@Configuration(proxyBeanMethods = false)
+public class KafkaConfiguration {
+
+    /** Container factory of the FBP listener. */
+    public static final String FBP_CONTAINER_FACTORY = "fbpKafkaListenerContainerFactory";
+    /** Container factory of the ABP listener. */
+    public static final String ABP_CONTAINER_FACTORY = "abpKafkaListenerContainerFactory";
+
+    static final long CASSANDRA_INITIAL_INTERVAL_MS = 500L;
+    static final long CASSANDRA_MAX_INTERVAL_MS = 30_000L;
+    static final double CASSANDRA_BACKOFF_MULTIPLIER = 2.0;
+
+    static final String SKIPPED_RECORDS_METRIC = "sports.mutations.dataloader.writer.records.skipped";
+    static final String CASSANDRA_RETRIES_METRIC = "sports.mutations.dataloader.writer.cassandra.retries";
+    static final String CASSANDRA_PERMANENT_FAILURES_METRIC = "sports.mutations.dataloader.writer.cassandra.permanent.failures";
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(KafkaConfiguration.class);
+
+    @Bean(FBP_CONTAINER_FACTORY)
+    ConcurrentKafkaListenerContainerFactory<String, com.ppb.platform.sb.fbp.proto.event.BetDomainEventOuterClass.BetDomainEvent>
+            fbpKafkaListenerContainerFactory(ConcurrentKafkaListenerContainerFactoryConfigurer configurer,
+                                             KafkaProperties kafkaProperties,
+                                             ObjectProvider<DefaultKafkaConsumerFactoryCustomizer> customizers) {
+        return containerFactory(configurer, kafkaProperties, customizers, FbpDeserializer::new);
+    }
+
+    @Bean(ABP_CONTAINER_FACTORY)
+    ConcurrentKafkaListenerContainerFactory<String, com.ppb.platform.sb.retail.proto.event.BetDomainEventOuterClass.BetDomainEvent>
+            abpKafkaListenerContainerFactory(ConcurrentKafkaListenerContainerFactoryConfigurer configurer,
+                                             KafkaProperties kafkaProperties,
+                                             ObjectProvider<DefaultKafkaConsumerFactoryCustomizer> customizers) {
+        return containerFactory(configurer, kafkaProperties, customizers, AbpDeserializer::new);
+    }
+
+    @Bean
+    BetEventListeners betEventListeners(FbpEventAdapter fbpEventAdapter, AbpEventAdapter abpEventAdapter,
+                                        BetEventHandler betEventHandler, MeterRegistry meterRegistry) {
+        return new BetEventListeners(fbpEventAdapter, abpEventAdapter, betEventHandler, meterRegistry);
+    }
+
+    /**
+     * @return the {@code kafka} component of {@code /actuator/health}
+     */
+    @Bean(destroyMethod = "close")
+    KafkaHealthIndicator kafkaHealthIndicator(KafkaListenerEndpointRegistry registry, KafkaAdmin kafkaAdmin) {
+        return new KafkaHealthIndicator(registry, kafkaAdmin);
+    }
+
+    /**
+     * Picked up by Boot's container factory configurer and therefore applied to both factories.
+     */
+    @Bean
+    DefaultErrorHandler kafkaErrorHandler(MeterRegistry meterRegistry) {
+        DefaultErrorHandler errorHandler = new DefaultErrorHandler(
+                (record, exception) -> logAndSkip(record, exception, meterRegistry), new FixedBackOff(0L, 0L));
+        errorHandler.setBackOffFunction(
+                (record, exception) -> isRetriableCassandraFailure(exception) ? cassandraBackOff() : null);
+        errorHandler.setRetryListeners((record, exception, deliveryAttempt) -> {
+            if (isRetriableCassandraFailure(exception)) {
+                Counter.builder(CASSANDRA_RETRIES_METRIC).tag("topic", record.topic()).register(meterRegistry).increment();
+                LOGGER.warn("Cassandra write failed, retrying without committing the offset, topic: {}, partition: {}, "
+                                + "offset: {}, key: {}, attempt: {}, error: {}", record.topic(), record.partition(),
+                        record.offset(), record.key(), deliveryAttempt, rootCause(exception).toString());
+            }
+        });
+        return errorHandler;
+    }
+
+    /**
+     * @return unlimited exponential backoff for Cassandra failures
+     */
+    static BackOff cassandraBackOff() {
+        ExponentialBackOff backOff = new ExponentialBackOff(CASSANDRA_INITIAL_INTERVAL_MS, CASSANDRA_BACKOFF_MULTIPLIER);
+        backOff.setMaxInterval(CASSANDRA_MAX_INTERVAL_MS);
+        backOff.setMaxElapsedTime(Long.MAX_VALUE);
+        backOff.setMaxAttempts(Long.MAX_VALUE);
+        return backOff;
+    }
+
+    /**
+     * @param exception failure of a listener invocation
+     * @return whether a Cassandra driver failure that may succeed later (not a {@link QueryValidationException}) is
+     *     part of its cause chain
+     */
+    static boolean isRetriableCassandraFailure(Throwable exception) {
+        return hasCause(exception, DriverException.class) && !isPermanentCassandraFailure(exception);
+    }
+
+    /**
+     * @param exception failure of a listener invocation
+     * @return whether a {@link QueryValidationException} (invalid query, syntax error, unauthorized, invalid
+     *     configuration, already exists) is part of its cause chain: retrying cannot make it succeed
+     */
+    static boolean isPermanentCassandraFailure(Throwable exception) {
+        return hasCause(exception, QueryValidationException.class);
+    }
+
+    private static boolean hasCause(Throwable exception, Class<? extends Throwable> type) {
+        for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
+            if (type.isInstance(cause)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static <V> ConcurrentKafkaListenerContainerFactory<String, V> containerFactory(
+            ConcurrentKafkaListenerContainerFactoryConfigurer configurer, KafkaProperties kafkaProperties,
+            ObjectProvider<DefaultKafkaConsumerFactoryCustomizer> customizers,
+            Supplier<Deserializer<V>> valueDeserializer) {
+        DefaultKafkaConsumerFactory<String, V> consumerFactory = new DefaultKafkaConsumerFactory<>(
+                kafkaProperties.buildConsumerProperties(),
+                StringDeserializer::new,
+                () -> new ErrorHandlingDeserializer<>(valueDeserializer.get()));
+        // Boot applies these only to its own consumer factory, not to the ones built here. Among them is the
+        // Micrometer listener that publishes the Kafka client metrics (kafka.consumer.fetch.manager.records.lag, ...)
+        customizers.orderedStream().forEach(customizer -> customizer.customize(consumerFactory));
+        ConcurrentKafkaListenerContainerFactory<String, V> factory = new ConcurrentKafkaListenerContainerFactory<>();
+        configurer.configure((ConcurrentKafkaListenerContainerFactory) factory, (ConsumerFactory) consumerFactory);
+        return factory;
+    }
+
+    private static void logAndSkip(ConsumerRecord<?, ?> record, Exception exception, MeterRegistry meterRegistry) {
+        if (isPermanentCassandraFailure(exception)) {
+            LOGGER.error("Skipped record after a permanent Cassandra failure (not retried), topic: {}, partition: {}, "
+                            + "offset: {}, key: {}", record.topic(), record.partition(), record.offset(), record.key(),
+                    exception);
+            Counter.builder(CASSANDRA_PERMANENT_FAILURES_METRIC).tag("topic", record.topic()).register(meterRegistry)
+                    .increment();
+            return;
+        }
+        LOGGER.error("Skipped record that could not be processed, topic: {}, partition: {}, offset: {}, key: {}",
+                record.topic(), record.partition(), record.offset(), record.key(), exception);
+        Counter.builder(SKIPPED_RECORDS_METRIC)
+                .tag("topic", record.topic())
+                .tag("exception", rootCause(exception).getClass().getSimpleName())
+                .register(meterRegistry)
+                .increment();
+    }
+
+    private static Throwable rootCause(Throwable exception) {
+        Throwable root = exception;
+        while (root.getCause() != null) {
+            root = root.getCause();
+        }
+        return root;
+    }
+}

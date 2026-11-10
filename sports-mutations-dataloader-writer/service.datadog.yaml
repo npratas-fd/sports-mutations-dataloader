@@ -1,0 +1,33 @@
+schema-version: v2.2
+dd-service: sports-mutations-dataloader-writer
+# TODO: team, domain and vertical must match https://fdorg.fanduel.dev/table (not known yet)
+team: TODO-team
+application: sports-mutations-dataloader
+description: Consumes the FBP and ABP bet Kafka topics and keeps the open bets of each account in Cassandra (CQRS write side of the sports mutations dataloader).
+tier: p2 # TODO: confirm the tier with the owning team
+lifecycle: experimental
+languages:
+  - java
+contacts:
+  - type: slack
+    name: "TODO-slack-channel"
+    contact: TODO-slack-channel-url
+links:
+  - name: sports-mutations-dataloader
+    type: repo
+    provider: github
+    url: TODO-repo-url
+  - name: Build Pipeline
+    type: other
+    url: TODO-build-pipeline-url
+  - name: Deploy Pipeline
+    type: other
+    url: TODO-deploy-pipeline-url
+tags:
+  - kind:service
+  - domain:TODO-domain
+  - vertical:TODO-vertical
+  - division:gbp
+  - platform:TODO-platform
+  - deployment-ui:TODO-deployment-ui
+  - application-state:stateless-share-nothing

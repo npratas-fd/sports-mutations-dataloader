@@ -1,0 +1,16 @@
+# Override: the writer consumes the real FBP topic of the nxtbs1 dev Kafka cluster instead of the local broker.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.nxtbs1.yml up --build -d
+#
+# Only sb_bet_processor_topic (FBP) is consumed; the ABP consumer is disabled. The writer joins its own consumer group
+# on the dev cluster and starts from the earliest retained offset (topic retention: 24h). The local Kafka still starts
+# but is unused by the writer.
+services:
+  sports-mutations-dataloader-writer:
+    environment:
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: use1-fokfd01-nxtbs1-vme.dev.fndlsb.net:9092
+      SPRING_KAFKA_CONSUMER_GROUP_ID: sports-mutations-dataloader-writer-local
+      # 24 partitions on the dev topic: 4 consumer threads to catch up faster (order per partition is kept)
+      SPRING_KAFKA_LISTENER_CONCURRENCY: "4"
+      SPORTS_MUTATIONS_DATALOADER_CONSUMERS_FBP_TOPIC: sb_bet_processor_topic
+      SPORTS_MUTATIONS_DATALOADER_CONSUMERS_ABP_ENABLED: "false"

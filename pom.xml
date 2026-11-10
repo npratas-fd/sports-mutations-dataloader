@@ -4,18 +4,17 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.flutter.gbp.betstore</groupId>
-    <artifactId>bet-store-parent</artifactId>
+    <groupId>com.flutter.gbp.sportsmutationsdataloader</groupId>
+    <artifactId>sports-mutations-dataloader-parent</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <packaging>pom</packaging>
-    <name>bet-store-parent</name>
+    <name>sports-mutations-dataloader-parent</name>
 
     <modules>
-        <module>bet-store-model</module>
-        <module>bet-store-client</module>
-        <module>bet-store-cassandra</module>
-        <module>bet-store-writer</module>
-        <module>bet-store-reader</module>
+        <module>sports-mutations-dataloader-model</module>
+        <module>sports-mutations-dataloader-cassandra</module>
+        <module>sports-mutations-dataloader-writer</module>
+        <module>sports-mutations-dataloader-reader</module>
     </modules>
 
     <properties>
@@ -38,7 +37,6 @@
         <!-- Same MapStruct as FCQ so the generated mappers of the copied converters are identical -->
         <mapstruct.version>1.5.3.Final</mapstruct.version>
         <jsr305.version>3.0.2</jsr305.version>
-        <wiremock.version>3.13.1</wiremock.version>
         <testng.version>7.7.0</testng.version>
         <testng-engine.version>1.0.6</testng-engine.version>
 
@@ -114,11 +112,6 @@
                 <groupId>com.google.code.findbugs</groupId>
                 <artifactId>jsr305</artifactId>
                 <version>${jsr305.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.wiremock</groupId>
-                <artifactId>wiremock-standalone</artifactId>
-                <version>${wiremock.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.testng</groupId>

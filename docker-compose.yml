@@ -1,0 +1,124 @@
+# Local stack: Cassandra + Kafka + sports-mutations-dataloader-writer + sports-mutations-dataloader-reader.
+#
+#   mvn -B -DskipTests package        # builds the two jars the images copy
+#   docker compose up --build -d
+#
+# Reader:  http://localhost:8080/v1/accounts/{accountId}/bets   (actuator: /actuator/health)
+# Writer:  http://localhost:8081/actuator/health
+# Kafka (from the host): localhost:9094  -  Cassandra (from the host): localhost:9042
+name: sports-mutations-dataloader
+
+services:
+  cassandra:
+    image: cassandra:4.1
+    environment:
+      CASSANDRA_CLUSTER_NAME: sports-mutations-dataloader-local
+      CASSANDRA_DC: datacenter1
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+
+  # Applies the keyspace and tables (local only: in production they are provisioned by infra)
+  cassandra-init:
+    image: cassandra:4.1
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    volumes:
+      - ./sports-mutations-dataloader-cassandra/src/main/resources/cql/sports_mutations_dataloader.cql:/schema/sports_mutations_dataloader.cql:ro
+    entrypoint: ["cqlsh", "cassandra", "9042", "-f", "/schema/sports_mutations_dataloader.cql"]
+    restart: "no"
+
+  kafka:
+    image: apache/kafka:3.9.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    ports:
+      - "9094:9094"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 15s
+
+  # Creates the two topics the writer consumes
+  kafka-init:
+    image: apache/kafka:3.9.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        for topic in sb_bet_processor_topic retail_bet_processor_topic; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic "$$topic" --partitions 3 --replication-factor 1
+        done
+    restart: "no"
+
+  sports-mutations-dataloader-writer:
+    build:
+      context: .
+      dockerfile: sports-mutations-dataloader-writer/Dockerfile
+    image: sports-mutations-dataloader-writer:local
+    depends_on:
+      cassandra-init:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      SPRING_CASSANDRA_CONTACT_POINTS: cassandra:9042
+      SPRING_CASSANDRA_LOCAL_DATACENTER: datacenter1
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8080 && printf \"GET /actuator/health HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q UP <&3'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  sports-mutations-dataloader-reader:
+    build:
+      context: .
+      dockerfile: sports-mutations-dataloader-reader/Dockerfile
+    image: sports-mutations-dataloader-reader:local
+    depends_on:
+      cassandra-init:
+        condition: service_completed_successfully
+    environment:
+      SPRING_CASSANDRA_CONTACT_POINTS: cassandra:9042
+      SPRING_CASSANDRA_LOCAL_DATACENTER: datacenter1
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8080 && printf \"GET /actuator/health HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q UP <&3'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+volumes:
+  cassandra-data:
